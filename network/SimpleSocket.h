@@ -72,7 +72,9 @@ For Client:
 enum NETWORK_PATTERN
 {
 	np_server,
-	np_client
+	np_client,
+	np_server_ex,
+	np_client_ex
 };
 
 struct SOCK_MESSAGE_HEADER
@@ -101,10 +103,11 @@ private:
 	void CreateMsgServerTcp(std::string strIP, unsigned short uPort);
 	void CreateMsgClientTcp(std::string strIP, unsigned short uPort);
 	void RecvData(SOCKET& connSocket);
+	void RecvDataEx(SOCKET& connSocket);
 
 	SOCKET m_srvSocket;		// Create a SOCKET for accepting incoming requests.
 	SOCKET m_cltSocket;
-	NETWORK_PATTERN m_workPattern;	// 0£ºserver ; 1£ºclient
+	NETWORK_PATTERN m_workPattern;	// Describe the network work pattern.
 	bool m_bStop;	// network 
 	bool m_bConnected;	// 
 	HandleDataFunc HandleData;
@@ -179,7 +182,14 @@ void CSimpleSocket::CreateMsgServerTcp(std::string strIP, unsigned short uPort)
 			closesocket(listenSocket);
 		}
 
-		RecvData(m_srvSocket);
+		if (m_workPattern == np_server)
+		{
+			RecvData(m_srvSocket);
+		}
+		else if (m_workPattern == np_server_ex)
+		{
+			RecvDataEx(m_srvSocket);
+		}
 	}
 }
 
@@ -216,7 +226,14 @@ void CSimpleSocket::CreateMsgClientTcp(std::string strIP, unsigned short uPort)
 			Sleep(500);
 		} while (iResult);
 
-		RecvData(m_cltSocket);
+		if (m_workPattern == np_client)
+		{
+			RecvData(m_cltSocket);
+		}
+		else if (m_workPattern == np_client_ex)
+		{
+			RecvDataEx(m_cltSocket);
+		}
 	}
 }
 
@@ -288,6 +305,110 @@ void CSimpleSocket::RecvData(SOCKET& connSocket)
 	}
 }
 
+void CSimpleSocket::RecvDataEx(SOCKET& connSocket)
+{
+	int nDataBufSize = BUF_SIZE * 2;
+	char* pDataBuf = new char[nDataBufSize];
+	char* pIncr = pDataBuf;
+	int nRecvDataSize = 0;
+	// socket recv
+	char recvBuf[BUF_SIZE];
+	char* pBuf = pDataBuf;
+	int nDataSize = 0;
+
+	while (true)
+	{
+		if (connSocket == INVALID_SOCKET)
+		{
+			break;
+		}
+		m_bConnected = true;
+		
+		int nRecvSize = recv(connSocket, recvBuf, sizeof(recvBuf), 0);
+		if (nRecvSize > 0)
+		{
+			if ((nDataBufSize - (pIncr - pDataBuf)) < nRecvSize)
+			{
+				memcpy(pDataBuf, pBuf, nRecvDataSize);
+				pIncr = pDataBuf + nRecvDataSize;
+				pBuf = pDataBuf;
+			}
+			// copy data to data buf.
+			memcpy(pIncr, recvBuf, nRecvSize);
+			nRecvDataSize += nRecvSize;
+			pIncr += nRecvSize;
+
+			while (true)
+			{
+				if (!nDataSize)
+				{
+					nDataSize = ((SOCK_MESSAGE_HEADER*)pBuf)->headerSize + ((SOCK_MESSAGE_HEADER*)pBuf)->dataSize;
+				}
+				if (nDataSize > nDataBufSize)
+				{
+					nDataBufSize = nDataSize % BUF_SIZE ? (nDataSize / BUF_SIZE + 2) * BUF_SIZE : (nDataSize / BUF_SIZE + 1) * BUF_SIZE;
+					char* pNewDataBuf = new char[nDataBufSize];
+					if (pNewDataBuf == NULL)
+					{
+						// log
+						return;
+					}
+					// copy data to new data buf.
+					memcpy(pNewDataBuf, pBuf, nRecvDataSize);
+					// release original buf
+					if (pDataBuf)
+					{
+						delete []pDataBuf;
+					}
+					pDataBuf = pNewDataBuf;		
+					pBuf = pIncr = pDataBuf;
+					pIncr += nRecvDataSize;
+					break;
+				}
+
+				if (nRecvDataSize >= nDataSize)
+				{
+					HandleData(*((SOCK_MESSAGE_HEADER*)pBuf), pBuf + ((SOCK_MESSAGE_HEADER*)pBuf)->headerSize);
+					pBuf = pBuf + nDataSize;
+					nRecvDataSize -= nDataSize;
+					nDataSize = 0;
+					if (nRecvDataSize < sizeof(SOCK_MESSAGE_HEADER))
+					{
+						memcpy(pDataBuf, pBuf, nRecvDataSize);
+						pBuf = pDataBuf;
+						pIncr = pDataBuf + nRecvDataSize;
+						break;
+					}
+					continue;
+				}
+				else
+				{
+					break;
+				}
+			}
+		}
+		else if (nRecvSize == 0)
+		{
+			// connection has closed. To do ...
+			connSocket = INVALID_SOCKET;
+		}
+		else
+		{
+			int nRet = WSAGetLastError();
+			// log
+			if (WSAEMSGSIZE == nRet)
+			{
+			}
+			connSocket = INVALID_SOCKET;
+		}
+	}
+
+	if (pDataBuf)
+	{
+		delete []pDataBuf;
+	}
+}
+
 // To do ... (for nDataSize larger than 1000)
 BOOL CSimpleSocket::SendData(int dataType, const char* pData, int nDataSize)
 {
@@ -323,7 +444,7 @@ BOOL CSimpleSocket::StartNetwork(std::string strIP, unsigned short uPort, NETWOR
 	}
 	HandleData = pHandleDataFunc;
 	m_workPattern = np;
-	if (m_workPattern)
+	if (m_workPattern % 2)
 	{
 		std::thread thread_clt(&CSimpleSocket::CreateMsgClientTcp, this, strIP, uPort);
 		thread_clt.detach();
