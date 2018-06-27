@@ -62,19 +62,29 @@ For Client:
 
 #include <string>
 #include <thread>
+#include <map>
+#include <mutex>
+#include <functional>
 
 #include <winsock2.h>
-#include <windows.h>
+// #include <windows.h>
 #pragma comment(lib, "Ws2_32.lib")
 
 #define BUF_SIZE 1024
 
 enum NETWORK_PATTERN
 {
-	np_server,
 	np_client,
-	np_server_ex,
-	np_client_ex
+	np_server,		// which can be connected by only one client, but can be connected many times.
+	np_client_ex,
+	np_server_ex
+};
+
+enum FUNC_STYLE
+{
+	fs_null,
+	fs_normal,
+	fs_stdBind
 };
 
 struct SOCK_MESSAGE_HEADER
@@ -84,20 +94,29 @@ struct SOCK_MESSAGE_HEADER
 	UINT dataSize;
 };
 
-typedef void(*HandleDataFunc)(SOCK_MESSAGE_HEADER& smh, const char* pDataBuf);
+struct SOCKET_INFO
+{
+	bool bAlive;
+};
+typedef std::map<SOCKET, SOCKET_INFO> SOCKET_INFOS;
+
+typedef void(*HandleDataFunc)(const SOCKET connSocket, SOCK_MESSAGE_HEADER& smh, const char* pDataBuf);
+typedef std::function<void(const SOCKET connSocket, SOCK_MESSAGE_HEADER& smh, const char* pDataBuf)> STD_HandleDataFunc;
 
 class CSimpleSocket
 {
 public:
 	CSimpleSocket();
-	~CSimpleSocket();
+	virtual ~CSimpleSocket();
 
 	BOOL StartNetwork(std::string strIP, unsigned short uPort, NETWORK_PATTERN np, HandleDataFunc pHandleDataFunc);
+	BOOL StartNetwork(std::string strIP, unsigned short uPort, NETWORK_PATTERN np, STD_HandleDataFunc pHandleDataFunc);
 	void StopNetwork();
 
 	bool GetNetworkConnStatus();
 
 	BOOL SendData(int dataType, const char* pData, int nDataSize);
+	static BOOL SendData(const SOCKET& s, int dataType, const char* pData, int nDataSize);
 
 private:
 	void CreateMsgServerTcp(std::string strIP, unsigned short uPort);
@@ -105,21 +124,25 @@ private:
 	void RecvData(SOCKET& connSocket);
 	void RecvDataEx(SOCKET& connSocket);
 
-	SOCKET m_srvSocket;		// Create a SOCKET for accepting incoming requests.
+	void SetSocketFailed(SOCKET& s);
+
 	SOCKET m_cltSocket;
-	NETWORK_PATTERN m_workPattern;	// Describe the network work pattern.
+	NETWORK_PATTERN m_workPattern;	// Describe the network work pattern. 0£ºclient ; > 1£ºserver
 	bool m_bStop;	// network 
 	bool m_bConnected;	// 
 	HandleDataFunc HandleData;
+	STD_HandleDataFunc STD_HandleData;
+	SOCKET_INFOS m_socketInfos;
+	std::mutex mutex_socketInfos;
+	FUNC_STYLE m_fsCallBack;
 };
 
 CSimpleSocket::CSimpleSocket()
 {
-	m_srvSocket = INVALID_SOCKET;
-	m_cltSocket = INVALID_SOCKET;
 	m_bStop = false;
 	m_bConnected = false;
-
+	m_fsCallBack = fs_null;
+	m_cltSocket = INVALID_SOCKET;
 	//----------------------
 	// Initialize Winsock.
 	WSADATA wsaData;
@@ -132,8 +155,10 @@ CSimpleSocket::CSimpleSocket()
 
 CSimpleSocket::~CSimpleSocket()
 {
-	closesocket(m_srvSocket);
-	closesocket(m_cltSocket);
+	if (m_cltSocket != INVALID_SOCKET)
+	{
+		closesocket(m_cltSocket);
+	}
 	WSACleanup();
 }
 
@@ -173,10 +198,10 @@ void CSimpleSocket::CreateMsgServerTcp(std::string strIP, unsigned short uPort)
 	while (!m_bStop)
 	{
 		m_bConnected = false;
-		//----------------------
-		// Accept the connection.
-		m_srvSocket = accept(listenSocket, NULL, NULL);
-		if (m_srvSocket == INVALID_SOCKET)
+		SOCKET connSock;
+		//----------------------  Accept the connection.
+		connSock = accept(listenSocket, NULL, NULL);
+		if (connSock == INVALID_SOCKET)
 		{
 			// log ("accept failed: %d\n", WSAGetLastError());
 			closesocket(listenSocket);
@@ -184,11 +209,19 @@ void CSimpleSocket::CreateMsgServerTcp(std::string strIP, unsigned short uPort)
 
 		if (m_workPattern == np_server)
 		{
-			RecvData(m_srvSocket);
+			SOCKET_INFO si;
+			si.bAlive = true;
+			m_socketInfos[connSock] = si;
+			std::thread th(&CSimpleSocket::RecvData, this, connSock);
+			th.detach();
 		}
 		else if (m_workPattern == np_server_ex)
 		{
-			RecvDataEx(m_srvSocket);
+			SOCKET_INFO si;
+			si.bAlive = true;
+			m_socketInfos[connSock] = si;
+			std::thread th(&CSimpleSocket::RecvDataEx, this, connSock);
+			th.detach();
 		}
 	}
 }
@@ -239,6 +272,7 @@ void CSimpleSocket::CreateMsgClientTcp(std::string strIP, unsigned short uPort)
 
 void CSimpleSocket::RecvData(SOCKET& connSocket)
 {
+	SOCKET s = connSocket;
 	char dataBuf[BUF_SIZE * 2] = {0};
 	char* pIncr = dataBuf;
 	int nRecvDataSize = 0;
@@ -248,18 +282,19 @@ void CSimpleSocket::RecvData(SOCKET& connSocket)
 
 	while (true)
 	{
-		if (connSocket == INVALID_SOCKET)
+		if (s == INVALID_SOCKET)
 		{
-			return;
+			break;
 		}
 		m_bConnected = true;
 
-		int nRecvSize = recv(connSocket, recvBuf, sizeof(recvBuf), 0);
+		int nRecvSize = recv(s, recvBuf, sizeof(recvBuf), 0);
 		if (nRecvSize > 0)
 		{
 			nRecvDataSize += nRecvSize;
 			memcpy(pIncr, recvBuf, nRecvSize);
 			pBuf = dataBuf;
+			pIncr += nRecvSize;
 			int nDataSize = 0;
 
 			while (true)
@@ -267,11 +302,20 @@ void CSimpleSocket::RecvData(SOCKET& connSocket)
 				nDataSize = ((SOCK_MESSAGE_HEADER*)pBuf)->headerSize + ((SOCK_MESSAGE_HEADER*)pBuf)->dataSize;
 				if (nRecvDataSize >= nDataSize)
 				{
-					HandleData(*((SOCK_MESSAGE_HEADER*)pBuf), pBuf + ((SOCK_MESSAGE_HEADER*)pBuf)->headerSize);
+					if (m_fsCallBack == fs_normal)
+					{
+						HandleData(s, *((SOCK_MESSAGE_HEADER*)pBuf), pBuf + ((SOCK_MESSAGE_HEADER*)pBuf)->headerSize);
+					}
+					else if (m_fsCallBack == fs_stdBind)
+					{
+						STD_HandleData(s, *((SOCK_MESSAGE_HEADER*)pBuf), pBuf + ((SOCK_MESSAGE_HEADER*)pBuf)->headerSize);
+					}
+
 					pBuf = pBuf + nDataSize;
 					nRecvDataSize -= nDataSize;
 					if (nRecvDataSize == 0)
 					{
+						pIncr = dataBuf;
 						break;
 					}
 					continue;
@@ -291,7 +335,7 @@ void CSimpleSocket::RecvData(SOCKET& connSocket)
 		else if (nRecvSize == 0)
 		{
 			// connection has closed. To do ...
-			connSocket = INVALID_SOCKET;
+			s = INVALID_SOCKET;
 		}
 		else
 		{
@@ -300,7 +344,7 @@ void CSimpleSocket::RecvData(SOCKET& connSocket)
 			if (WSAEMSGSIZE == nRet)
 			{
 			}		
-			connSocket = INVALID_SOCKET;
+			s = INVALID_SOCKET;
 		}
 	}
 }
@@ -311,8 +355,7 @@ void CSimpleSocket::RecvDataEx(SOCKET& connSocket)
 	char* pDataBuf = new char[nDataBufSize];
 	char* pIncr = pDataBuf;
 	int nRecvDataSize = 0;
-	// socket recv
-	char recvBuf[BUF_SIZE];
+	char recvBuf[BUF_SIZE];		// socket recv buf
 	char* pBuf = pDataBuf;
 	int nDataSize = 0;
 
@@ -357,9 +400,8 @@ void CSimpleSocket::RecvDataEx(SOCKET& connSocket)
 					memcpy(pNewDataBuf, pBuf, nRecvDataSize);
 					// release original buf
 					if (pDataBuf)
-					{
 						delete []pDataBuf;
-					}
+					
 					pDataBuf = pNewDataBuf;		
 					pBuf = pIncr = pDataBuf;
 					pIncr += nRecvDataSize;
@@ -368,7 +410,14 @@ void CSimpleSocket::RecvDataEx(SOCKET& connSocket)
 
 				if (nRecvDataSize >= nDataSize)
 				{
-					HandleData(*((SOCK_MESSAGE_HEADER*)pBuf), pBuf + ((SOCK_MESSAGE_HEADER*)pBuf)->headerSize);
+					if (m_fsCallBack == fs_normal)
+					{
+						HandleData(connSocket, *((SOCK_MESSAGE_HEADER*)pBuf), pBuf + ((SOCK_MESSAGE_HEADER*)pBuf)->headerSize);
+					}
+					else if (m_fsCallBack == fs_stdBind)
+					{
+						STD_HandleData(connSocket, *((SOCK_MESSAGE_HEADER*)pBuf), pBuf + ((SOCK_MESSAGE_HEADER*)pBuf)->headerSize);
+					}
 					pBuf = pBuf + nDataSize;
 					nRecvDataSize -= nDataSize;
 					nDataSize = 0;
@@ -404,35 +453,58 @@ void CSimpleSocket::RecvDataEx(SOCKET& connSocket)
 	}
 
 	if (pDataBuf)
-	{
 		delete []pDataBuf;
-	}
 }
 
-// To do ... (for nDataSize larger than 1000)
-BOOL CSimpleSocket::SendData(int dataType, const char* pData, int nDataSize)
+BOOL CSimpleSocket::SendData(const SOCKET& s, int dataType, const char* pData, int nDataSize)
 {
 	BOOL bRet = FALSE;
-	SOCKET comSocket = m_workPattern ? m_cltSocket : m_srvSocket;
-	if (comSocket != INVALID_SOCKET)
+	char* pAllocBuf = NULL;
+	char* pBuf = NULL;
+	if (s != INVALID_SOCKET)
 	{
 		char buf[BUF_SIZE];
+		if (nDataSize > sizeof(buf))
+		{
+			pAllocBuf = new char[sizeof(SOCK_MESSAGE_HEADER) + nDataSize];
+			if (pAllocBuf)
+			{
+				pBuf = pAllocBuf;
+			}
+			else
+			{
+				// log
+			}
+		}
+		else
+		{
+			pBuf = buf;
+		}
 		SOCK_MESSAGE_HEADER smh;
 		smh.dataType = dataType;
 		smh.headerSize = sizeof(smh);
 		smh.dataSize = nDataSize;
-		memcpy(buf, &smh, smh.headerSize);
-		memcpy(buf + smh.headerSize, pData, nDataSize);
-		int iResult = send(comSocket, buf, smh.headerSize + smh.dataSize, 0);
+		memcpy(pBuf, &smh, smh.headerSize);
+		memcpy(pBuf + smh.headerSize, pData, nDataSize);
+		int iResult = send(s, pBuf, smh.headerSize + smh.dataSize, 0);
 
+		bRet = TRUE;
 		if (iResult == SOCKET_ERROR)
 		{
 			// log
 			bRet = FALSE;
 		}
 	}
-	
+
+	if (pAllocBuf)
+		delete[]pAllocBuf;
+
 	return bRet;
+}
+
+BOOL CSimpleSocket::SendData(int dataType, const char* pData, int nDataSize)
+{
+	return SendData(m_cltSocket, dataType, pData, nDataSize);
 }
 
 BOOL CSimpleSocket::StartNetwork(std::string strIP, unsigned short uPort, NETWORK_PATTERN np, HandleDataFunc pHandleDataFunc)
@@ -442,38 +514,86 @@ BOOL CSimpleSocket::StartNetwork(std::string strIP, unsigned short uPort, NETWOR
 	{
 		return FALSE;
 	}
+	m_fsCallBack = fs_normal;
 	HandleData = pHandleDataFunc;
 	m_workPattern = np;
-	if (m_workPattern % 2)
+
+	if (m_workPattern == np_client)
 	{
 		std::thread thread_clt(&CSimpleSocket::CreateMsgClientTcp, this, strIP, uPort);
 		thread_clt.detach();
 	}
-	else
+	else if (m_workPattern == np_server)
 	{
 		std::thread thread_srv(&CSimpleSocket::CreateMsgServerTcp, this, strIP, uPort);
 		thread_srv.detach();
 	}
+
+	return bRet;
+}
+
+BOOL CSimpleSocket::StartNetwork(std::string strIP, unsigned short uPort, NETWORK_PATTERN np, STD_HandleDataFunc pHandleDataFunc)
+{
+	BOOL bRet = TRUE;
+	if (strIP.empty() || uPort == 0 || pHandleDataFunc == NULL || m_bConnected)
+	{
+		return FALSE;
+	}
+	m_fsCallBack = fs_stdBind;
+	STD_HandleData = pHandleDataFunc;
+	m_workPattern = np;
+
+	if (m_workPattern == np_client)
+	{
+		std::thread thread_clt(&CSimpleSocket::CreateMsgClientTcp, this, strIP, uPort);
+		thread_clt.detach();
+	}
+	else if (m_workPattern == np_server)
+	{
+		std::thread thread_srv(&CSimpleSocket::CreateMsgServerTcp, this, strIP, uPort);
+		thread_srv.detach();
+	}
+
 	return bRet;
 }
 
 void CSimpleSocket::StopNetwork()
 {
 	m_bStop = true;
-	if (m_cltSocket != INVALID_SOCKET)
-	{
-		closesocket(m_cltSocket);
-	}
+	std::lock_guard<std::mutex> mlock(mutex_socketInfos);
 
-	if (m_srvSocket != INVALID_SOCKET)
+	switch (m_workPattern)
 	{
-		shutdown(m_srvSocket, SD_SEND);
+	case np_client:
+		closesocket(m_cltSocket);
+		break;
+	case np_server:
+		for (auto it = m_socketInfos.begin(); it != m_socketInfos.end(); it++)
+		{
+			shutdown(it->first, SD_SEND);
+		}
+		m_socketInfos.clear();
+		break;
+	default:
+		break;
 	}
 }
 
 bool CSimpleSocket::GetNetworkConnStatus()
 {
 	return m_bConnected;
+}
+
+void CSimpleSocket::SetSocketFailed(SOCKET& s)
+{
+	std::lock_guard<std::mutex> mlock(mutex_socketInfos);
+	auto iter = m_socketInfos.find(s);
+	if (iter != m_socketInfos.end())
+	{
+		// (*iter).second.bAlive = false;
+		// For now, just erase the socket record.
+		m_socketInfos.erase(iter);
+	}
 }
 
 
