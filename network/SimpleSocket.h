@@ -73,14 +73,15 @@ For Client:
 namespace SIMPLE_SOCKET
 {
 
-#define BUF_SIZE 1024
+#define BUF_SIZE		1024
+#define LOG_BUF_SIZE	256
 
 	enum NETWORK_PATTERN
 	{
 		np_client,
-		np_server,		// which can be connected by only one client, but can be connected many times.
-		np_client_ex,
-		np_server_ex
+		np_server,		// for small data.
+		np_client_ex,	
+		np_server_ex	// for big data.
 	};
 
 	enum FUNC_STYLE
@@ -105,6 +106,9 @@ namespace SIMPLE_SOCKET
 
 	typedef void(*HandleDataFunc)(const SOCKET connSocket, SOCK_MESSAGE_HEADER& smh, const char* pDataBuf);
 	typedef std::function<void(const SOCKET connSocket, SOCK_MESSAGE_HEADER& smh, const char* pDataBuf)> STD_HandleDataFunc;
+	typedef void(*LogFunc)(const char* pLogStr);
+	typedef void(*LogFuncW)(const wchar_t* pLogStr);
+	typedef std::function<void(const std::wstring& strLog)> STD_LogFuncW;
 
 	class CSimpleSocket
 	{
@@ -115,7 +119,8 @@ namespace SIMPLE_SOCKET
 		BOOL StartNetwork(std::string strIP, unsigned short uPort, NETWORK_PATTERN np, HandleDataFunc pHandleDataFunc);
 		BOOL StartNetwork(std::string strIP, unsigned short uPort, NETWORK_PATTERN np, STD_HandleDataFunc pHandleDataFunc);
 		void StopNetwork();
-
+		void SetLogCallBackFunc(LogFuncW logFunc);
+		void SetLogCallBackFunc(STD_LogFuncW logFunc);
 		bool GetNetworkConnStatus();
 
 		BOOL SendData(int dataType, const char* pData, int nDataSize);
@@ -128,20 +133,23 @@ namespace SIMPLE_SOCKET
 		void RecvDataEx(SOCKET& connSocket);
 
 		void SetSocketFailed(SOCKET& s);
+		inline void LogOutput(const wchar_t* pLogStr);
+		inline void Log(wchar_t* FormatStr, ...);
+
+		HandleDataFunc HandleData;
+		STD_HandleDataFunc STD_HandleData;
+		LogFuncW CallBackLog;
+		STD_LogFuncW STD_CallBackLog;
 
 		SOCKET m_cltSocket;
 		NETWORK_PATTERN m_workPattern;	// Describe the network work pattern. 0£ºclient ; > 1£ºserver
 		bool m_bStop;	// network 
 		bool m_bConnected;	// 
-		HandleDataFunc HandleData;
-		STD_HandleDataFunc STD_HandleData;
+
 		SOCKET_INFOS m_socketInfos;
 		std::mutex mutex_socketInfos;
-		FUNC_STYLE m_fsCallBack;
+		FUNC_STYLE m_fsCallBack;	
 	};
-
-	
-
 }
 
 #endif
