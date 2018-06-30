@@ -223,7 +223,7 @@ void CSimpleSocket::RecvDataEx(SOCKET& connSocket)
 	char* pIncr = pDataBuf;
 	int nRecvDataSize = 0;
 	char recvBuf[BUF_SIZE];		// socket recv buf
-	char* pBuf = pDataBuf;
+	char* pData = pDataBuf;
 	int nDataSize = 0;
 
 	while (true)
@@ -239,9 +239,32 @@ void CSimpleSocket::RecvDataEx(SOCKET& connSocket)
 		{
 			if ((nDataBufSize - (pIncr - pDataBuf)) < nRecvSize)
 			{
-				memcpy(pDataBuf, pBuf, nRecvDataSize);
-				pIncr = pDataBuf + nRecvDataSize;
-				pBuf = pDataBuf;
+				if (nRecvDataSize + nRecvSize > nDataBufSize)
+				{
+					int nSaveSize = nRecvDataSize + nRecvSize;
+					nDataBufSize = nSaveSize % BUF_SIZE ? (nSaveSize / BUF_SIZE + 2) * BUF_SIZE : (nSaveSize / BUF_SIZE + 1) * BUF_SIZE;
+					char* pNewDataBuf = new char[nDataBufSize];
+					if (pNewDataBuf == NULL)
+					{
+						Log(L"RecvDataEx: allocate new space failed, the need size is %d \n", nDataBufSize);
+						return;
+					}
+					// copy data to new data buf.
+					memcpy(pNewDataBuf, pData, nRecvDataSize);
+					// release original buf
+					if (pDataBuf)
+						delete[]pDataBuf;
+
+					pDataBuf = pNewDataBuf;
+					pData = pIncr = pDataBuf;
+					pIncr += nRecvDataSize;
+				}
+				else
+				{
+					memcpy(pDataBuf, pData, nRecvDataSize);
+					pIncr = pDataBuf + nRecvDataSize;
+					pData = pDataBuf;
+				}
 			}
 			// copy data to data buf.
 			memcpy(pIncr, recvBuf, nRecvSize);
@@ -252,7 +275,7 @@ void CSimpleSocket::RecvDataEx(SOCKET& connSocket)
 			{
 				if (!nDataSize)
 				{
-					nDataSize = ((SOCK_MESSAGE_HEADER*)pBuf)->headerSize + ((SOCK_MESSAGE_HEADER*)pBuf)->dataSize;
+					nDataSize = ((SOCK_MESSAGE_HEADER*)pData)->headerSize + ((SOCK_MESSAGE_HEADER*)pData)->dataSize;
 				}
 				if (nDataSize > nDataBufSize)
 				{
@@ -264,13 +287,13 @@ void CSimpleSocket::RecvDataEx(SOCKET& connSocket)
 						return;
 					}
 					// copy data to new data buf.
-					memcpy(pNewDataBuf, pBuf, nRecvDataSize);
+					memcpy(pNewDataBuf, pData, nRecvDataSize);
 					// release original buf
 					if (pDataBuf)
 						delete[]pDataBuf;
 
 					pDataBuf = pNewDataBuf;
-					pBuf = pIncr = pDataBuf;
+					pData = pIncr = pDataBuf;
 					pIncr += nRecvDataSize;
 					break;
 				}
@@ -279,19 +302,19 @@ void CSimpleSocket::RecvDataEx(SOCKET& connSocket)
 				{
 					if (m_fsCallBack == fs_normal && HandleData != NULL)
 					{
-						HandleData(connSocket, *((SOCK_MESSAGE_HEADER*)pBuf), pBuf + ((SOCK_MESSAGE_HEADER*)pBuf)->headerSize);
+						HandleData(connSocket, *((SOCK_MESSAGE_HEADER*)pData), pData + ((SOCK_MESSAGE_HEADER*)pData)->headerSize);
 					}
 					else if (m_fsCallBack == fs_stdBind && STD_HandleData != nullptr)
 					{
-						STD_HandleData(connSocket, *((SOCK_MESSAGE_HEADER*)pBuf), pBuf + ((SOCK_MESSAGE_HEADER*)pBuf)->headerSize);
+						STD_HandleData(connSocket, *((SOCK_MESSAGE_HEADER*)pData), pData + ((SOCK_MESSAGE_HEADER*)pData)->headerSize);
 					}
-					pBuf = pBuf + nDataSize;
+					pData = pData + nDataSize;
 					nRecvDataSize -= nDataSize;
 					nDataSize = 0;
 					if (nRecvDataSize < sizeof(SOCK_MESSAGE_HEADER))
 					{
-						memcpy(pDataBuf, pBuf, nRecvDataSize);
-						pBuf = pDataBuf;
+						memcpy(pDataBuf, pData, nRecvDataSize);
+						pData = pDataBuf;
 						pIncr = pDataBuf + nRecvDataSize;
 						break;
 					}
@@ -304,8 +327,7 @@ void CSimpleSocket::RecvDataEx(SOCKET& connSocket)
 			}
 		}
 		else if (nRecvSize == 0)
-		{
-			// connection has closed. To do ...
+		{	// connection has closed. To do ...
 			connSocket = INVALID_SOCKET;
 		}
 		else
@@ -327,7 +349,7 @@ BOOL CSimpleSocket::SendData(const SOCKET& s, int dataType, const char* pData, i
 	if (s != INVALID_SOCKET)
 	{
 		char buf[BUF_SIZE];
-		if (nDataSize > sizeof(buf))
+		if (nDataSize + sizeof(SOCK_MESSAGE_HEADER) > sizeof(buf))
 		{
 			pAllocBuf = new char[sizeof(SOCK_MESSAGE_HEADER)+nDataSize];
 			if (pAllocBuf)
