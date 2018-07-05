@@ -218,29 +218,29 @@ void CSimpleSocket::RecvData(SOCKET& connSocket)
 
 void CSimpleSocket::RecvDataEx(SOCKET& connSocket)
 {
-	int nDataBufSize = BUF_SIZE * 2;
-	char* pDataBuf = new char[nDataBufSize];
-	char* pIncr = pDataBuf;
-	int nRecvDataSize = 0;
+	int nDataBufSize = BUF_SIZE * 2;	// save the buffer size, the initial size is BUF_SIZE * 2.
+	char* pRawDataBuf = new char[nDataBufSize];	// point to raw data buffer
+	char* pIncr = pRawDataBuf;		// the increment position in the data buffer.
+	int nRecvDataSize = 0;		// the size of received total data in raw data buffer.
 	char recvBuf[BUF_SIZE];		// socket recv buf
-	char* pData = pDataBuf;
-	int nDataSize = 0;
+	char* pPackageData = pRawDataBuf;		// point to header of a data package.
+	int nPackageDataSize = 0;
 
 	while (true)
 	{
 		if (connSocket == INVALID_SOCKET)
-		{
+		{// if the socket is invalid, we quit the thread.
 			break;
 		}
 		m_bConnected = true;
 
 		int nRecvSize = recv(connSocket, recvBuf, sizeof(recvBuf), 0);
 		if (nRecvSize > 0)
-		{
-			if ((nDataBufSize - (pIncr - pDataBuf)) < nRecvSize)
-			{
+		{	// check if the pRawDataBuf has enough space to save the new arrived data.
+			if ((nDataBufSize - (pIncr - pRawDataBuf)) < nRecvSize)
+			{	// check if the raw data buffer can save the new arrive data.
 				if (nRecvDataSize + nRecvSize > nDataBufSize)
-				{
+				{	// if not, realloc the raw data buffer with bigger size.
 					int nSaveSize = nRecvDataSize + nRecvSize;
 					nDataBufSize = nSaveSize % BUF_SIZE ? (nSaveSize / BUF_SIZE + 2) * BUF_SIZE : (nSaveSize / BUF_SIZE + 1) * BUF_SIZE;
 					char* pNewDataBuf = new char[nDataBufSize];
@@ -250,36 +250,36 @@ void CSimpleSocket::RecvDataEx(SOCKET& connSocket)
 						return;
 					}
 					// copy data to new data buf.
-					memcpy(pNewDataBuf, pData, nRecvDataSize);
+					memcpy(pNewDataBuf, pPackageData, nRecvDataSize);
 					// release original buf
-					if (pDataBuf)
-						delete[]pDataBuf;
+					if (pRawDataBuf)
+						delete[]pRawDataBuf;
 
-					pDataBuf = pNewDataBuf;
-					pData = pIncr = pDataBuf;
+					pRawDataBuf = pNewDataBuf;
+					pPackageData = pIncr = pRawDataBuf;
 					pIncr += nRecvDataSize;
 				}
 				else
-				{
-					memcpy(pDataBuf, pData, nRecvDataSize);
-					pIncr = pDataBuf + nRecvDataSize;
-					pData = pDataBuf;
+				{	// buffer has been overflow by new data, we rewrite the unhandle data to header of the raw data buffer.
+					memcpy(pRawDataBuf, pPackageData, nRecvDataSize);
+					pIncr = pRawDataBuf + nRecvDataSize;
+					pPackageData = pRawDataBuf;
 				}
 			}
-			// copy data to data buf.
+			// copy new arrived data to data buffer.
 			memcpy(pIncr, recvBuf, nRecvSize);
 			nRecvDataSize += nRecvSize;
 			pIncr += nRecvSize;
 
 			while (true)
-			{
-				if (!nDataSize)
+			{	// handle the received data by calling the callback function.
+				if (!nPackageDataSize)
 				{
-					nDataSize = ((SOCK_MESSAGE_HEADER*)pData)->headerSize + ((SOCK_MESSAGE_HEADER*)pData)->dataSize;
+					nPackageDataSize = ((SOCK_MESSAGE_HEADER*)pPackageData)->headerSize + ((SOCK_MESSAGE_HEADER*)pPackageData)->dataSize;
 				}
-				if (nDataSize > nDataBufSize)
-				{
-					nDataBufSize = nDataSize % BUF_SIZE ? (nDataSize / BUF_SIZE + 2) * BUF_SIZE : (nDataSize / BUF_SIZE + 1) * BUF_SIZE;
+				if (nPackageDataSize > nDataBufSize)
+				{	// if the data has not load finished as small size buf, we realloc buffer, and continue to receive data.
+					nDataBufSize = nPackageDataSize % BUF_SIZE ? (nPackageDataSize / BUF_SIZE + 2) * BUF_SIZE : (nPackageDataSize / BUF_SIZE + 1) * BUF_SIZE;
 					char* pNewDataBuf = new char[nDataBufSize];
 					if (pNewDataBuf == NULL)
 					{
@@ -287,35 +287,35 @@ void CSimpleSocket::RecvDataEx(SOCKET& connSocket)
 						return;
 					}
 					// copy data to new data buf.
-					memcpy(pNewDataBuf, pData, nRecvDataSize);
+					memcpy(pNewDataBuf, pPackageData, nRecvDataSize);
 					// release original buf
-					if (pDataBuf)
-						delete[]pDataBuf;
+					if (pRawDataBuf)
+						delete[]pRawDataBuf;
 
-					pDataBuf = pNewDataBuf;
-					pData = pIncr = pDataBuf;
+					pRawDataBuf = pNewDataBuf;
+					pPackageData = pIncr = pRawDataBuf;
 					pIncr += nRecvDataSize;
 					break;
 				}
 
-				if (nRecvDataSize >= nDataSize)
-				{
+				if (nRecvDataSize >= nPackageDataSize)
+				{	// if get enough data, we handle it.
 					if (m_fsCallBack == fs_normal && HandleData != NULL)
 					{
-						HandleData(connSocket, *((SOCK_MESSAGE_HEADER*)pData), pData + ((SOCK_MESSAGE_HEADER*)pData)->headerSize);
+						HandleData(connSocket, *((SOCK_MESSAGE_HEADER*)pPackageData), pPackageData + ((SOCK_MESSAGE_HEADER*)pPackageData)->headerSize);
 					}
 					else if (m_fsCallBack == fs_stdBind && STD_HandleData != nullptr)
 					{
-						STD_HandleData(connSocket, *((SOCK_MESSAGE_HEADER*)pData), pData + ((SOCK_MESSAGE_HEADER*)pData)->headerSize);
+						STD_HandleData(connSocket, *((SOCK_MESSAGE_HEADER*)pPackageData), pPackageData + ((SOCK_MESSAGE_HEADER*)pPackageData)->headerSize);
 					}
-					pData = pData + nDataSize;
-					nRecvDataSize -= nDataSize;
-					nDataSize = 0;
+					pPackageData = pPackageData + nPackageDataSize;
+					nRecvDataSize -= nPackageDataSize;	// nRecvDataSize minus the handled data size.
+					nPackageDataSize = 0;
 					if (nRecvDataSize < sizeof(SOCK_MESSAGE_HEADER))
-					{
-						memcpy(pDataBuf, pData, nRecvDataSize);
-						pData = pDataBuf;
-						pIncr = pDataBuf + nRecvDataSize;
+					{	// if recv data is less than package header size, we copy data and continue to recevie data.
+						memcpy(pRawDataBuf, pPackageData, nRecvDataSize);
+						pPackageData = pRawDataBuf;
+						pIncr = pRawDataBuf + nRecvDataSize;
 						break;
 					}
 					continue;
@@ -337,8 +337,8 @@ void CSimpleSocket::RecvDataEx(SOCKET& connSocket)
 		}
 	}
 
-	if (pDataBuf)
-		delete[]pDataBuf;
+	if (pRawDataBuf)
+		delete[]pRawDataBuf;
 }
 
 BOOL CSimpleSocket::SendData(const SOCKET& s, int dataType, const char* pData, int nDataSize)
@@ -514,7 +514,7 @@ void CSimpleSocket::LogOutput(const wchar_t* pLogStr)
 		STD_CallBackLog(strLog);
 	}
 	else
-	{
+	{// default output debug info to DebugView(windows) or console(Linux)
 		OutputDebugString(pLogStr);
 	}
 }

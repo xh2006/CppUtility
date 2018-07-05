@@ -79,9 +79,9 @@ namespace SIMPLE_SOCKET
 	enum NETWORK_PATTERN
 	{
 		np_client,
-		np_server,		// for small data.
+		np_server,		// for data whose largest size is less than BUF_SIZE.
 		np_client_ex,	
-		np_server_ex	// for big data.
+		np_server_ex	// for big data with no fixed size.
 	};
 
 	enum FUNC_STYLE
@@ -93,8 +93,8 @@ namespace SIMPLE_SOCKET
 
 	struct SOCK_MESSAGE_HEADER
 	{
-		UINT dataType;
 		UINT headerSize;
+		UINT dataType;
 		UINT dataSize;
 	};
 
@@ -129,8 +129,8 @@ namespace SIMPLE_SOCKET
 	private:
 		void CreateMsgServerTcp(std::string strIP, unsigned short uPort);
 		void CreateMsgClientTcp(std::string strIP, unsigned short uPort);
-		void RecvData(SOCKET& connSocket);
-		void RecvDataEx(SOCKET& connSocket);
+		void RecvData(SOCKET& connSocket);	// for package size less than BUF_SIZE
+		void RecvDataEx(SOCKET& connSocket);	// for package size is not fixed.
 
 		void SetSocketFailed(SOCKET& s);
 		inline void LogOutput(const wchar_t* pLogStr);
