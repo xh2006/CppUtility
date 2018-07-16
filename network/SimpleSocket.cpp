@@ -1,7 +1,10 @@
 
+#include <string.h>
+#include <stdarg.h>
+#include <fcntl.h>
 #include "SimpleSocket.h"
 
-using namespace SIMPLE_SOCKET;
+namespace SIMPLE_SOCKET{
 
 CSimpleSocket::CSimpleSocket()
 {
@@ -10,17 +13,21 @@ CSimpleSocket::CSimpleSocket()
 	m_fsCallBack = fs_null;
 	m_cltSocket = INVALID_SOCKET;
 	HandleData = NULL;
-	STD_HandleData = nullptr;
+	// STD_HandleData = nullptr;
 	CallBackLog = NULL;
-	STD_CallBackLog = nullptr;
+	// STD_CallBackLog = nullptr;
 	//----------------------
+#ifdef _WIN32
 	// Initialize Winsock.
 	WSADATA wsaData;
 	int iResult = WSAStartup(MAKEWORD(2, 2), &wsaData);
 	if (iResult != NO_ERROR) {
-		Log(L"Error at WSAStartup()\n");
+		Log("Error at WSAStartup()\n");
 		return;
 	}
+#else
+	m_epfd = 0;
+#endif
 }
 
 CSimpleSocket::~CSimpleSocket()
@@ -29,19 +36,34 @@ CSimpleSocket::~CSimpleSocket()
 	{
 		closesocket(m_cltSocket);
 	}
+#ifdef _WIN32
 	WSACleanup();
+#else
+	if (m_epfd) {
+		close(m_epfd);
+	}
+#endif
+	StopNetwork();
 }
 
 void CSimpleSocket::CreateMsgServerTcp(std::string strIP, unsigned short uPort)
 {
+	struct epoll_event ev,events[MAX_EVENTS];
+	m_epfd = epoll_create(1024);
+
+	struct sockaddr addr;
+	socklen_t addrlen = 0;
 	//----------------------
-	// Create a SOCKET for listening, for incoming connection requests.
-	SOCKET listenSocket;
-	listenSocket = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+	// Create a socket_r for listening, for incoming connection requests.
+	socket_r listenSocket;
+	listenSocket = socket(AF_INET, SOCK_STREAM, 0); // IPPROTO_TCP
 	if (listenSocket == INVALID_SOCKET) {
-		Log(L"Error at socket(): %ld\n", WSAGetLastError());
+		Log("Error at socket(): %d\n", GetSocketErrorCode());
 		return;
 	}
+
+	// add listen socket.
+	add_fd(m_epfd, listenSocket);
 
 	//----------------------
 	// The sockaddr_in structure specifies the address family,
@@ -51,8 +73,8 @@ void CSimpleSocket::CreateMsgServerTcp(std::string strIP, unsigned short uPort)
 	service.sin_addr.s_addr = inet_addr(strIP.c_str());
 	service.sin_port = htons(uPort);
 
-	if (::bind(listenSocket, (SOCKADDR*)&service, sizeof(service)) == SOCKET_ERROR) {
-		Log(L"bind() failed. Error code : %d\n", WSAGetLastError());
+	if (::bind(listenSocket, (sockaddr*)&service, sizeof(service)) == SOCKET_ERROR) {
+		Log("bind() failed. Error code : %d\n", GetSocketErrorCode());
 		closesocket(listenSocket);
 		return;
 	}
@@ -60,20 +82,21 @@ void CSimpleSocket::CreateMsgServerTcp(std::string strIP, unsigned short uPort)
 	//----------------------
 	// Listen for incoming connection requests on the created socket
 	if (listen(listenSocket, SOMAXCONN) == SOCKET_ERROR) {
-		Log(L"Error listening on socket. Error code : %d\n", WSAGetLastError());
+		Log("Error listening on socket. Error code : %d\n", GetSocketErrorCode());
 		closesocket(listenSocket);
 		return;
 	}
+	m_bConnected = false;
+	socket_r connSock;
 
 	while (!m_bStop)
 	{
-		m_bConnected = false;
-		SOCKET connSock;
+#ifdef _WIN32	// it will be upgraded later if any requirements in pactice. 
 		//----------------------  Accept the connection.
 		connSock = accept(listenSocket, NULL, NULL);
 		if (connSock == INVALID_SOCKET)
 		{
-			Log(L"accept failed: %d\n", WSAGetLastError());
+			Log("accept failed: %d\n", GetSocketErrorCode());
 			closesocket(listenSocket);
 		}
 
@@ -93,6 +116,17 @@ void CSimpleSocket::CreateMsgServerTcp(std::string strIP, unsigned short uPort)
 			std::thread th(&CSimpleSocket::RecvDataEx, this, connSock);
 			th.detach();
 		}
+#else
+		int nfds = epoll_wait(m_epfd, events, MAX_EVENTS, 500);
+
+		if(m_workPattern == np_server_epoll_et){
+			et(events, nfds, m_epfd, listenSocket);
+		}
+		else if(m_workPattern == np_server_epoll_lt){
+			lt(events, nfds, m_epfd, listenSocket);
+		}
+
+#endif
 	}
 }
 
@@ -103,11 +137,10 @@ void CSimpleSocket::CreateMsgClientTcp(std::string strIP, unsigned short uPort)
 	while (!m_bStop)
 	{	
 		//----------------------
-		// Create a SOCKET for sending, for incoming connection requests.
+		// Create a socket_r for sending, for incoming connection requests.
 		m_cltSocket = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
 		if (m_cltSocket == INVALID_SOCKET) {
-			Log (L"Error at socket(): %ld\n", WSAGetLastError());
-			WSACleanup();
+			Log ("Error at socket(): %ld\n", GetSocketErrorCode());
 			return;
 		}
 
@@ -121,29 +154,31 @@ void CSimpleSocket::CreateMsgClientTcp(std::string strIP, unsigned short uPort)
 		m_bConnected = false;
 		do
 		{
-			Log(L"try to connect to server...... \n");
-			iResult = connect(m_cltSocket, (SOCKADDR*)&serviceAddr, sizeof(serviceAddr));
+			Log("try to connect to server...... \n");
+			iResult = connect(m_cltSocket, (sockaddr*)&serviceAddr, sizeof(serviceAddr));
 			if (iResult == SOCKET_ERROR)
 			{
-				Log(L"connect failed with error: %d \n", WSAGetLastError());
+				Log("connect failed with error: %d \n", GetSocketErrorCode());
 			}
-			Sleep(500);
+			// Sleep(500);
 		} while (iResult);
 
 		if (m_workPattern == np_client)
 		{
 			RecvData(m_cltSocket);
 		}
+#ifdef _WIN32
 		else if (m_workPattern == np_client_ex)
 		{
 			RecvDataEx(m_cltSocket);
 		}
+#endif
 	}
 }
 
-void CSimpleSocket::RecvData(SOCKET& connSocket)
+void CSimpleSocket::RecvData(socket_r& connSocket)
 {
-	SOCKET s = connSocket;
+	socket_r s = connSocket;
 	char dataBuf[BUF_SIZE * 2] = { 0 };
 	char* pIncr = dataBuf;
 	int nRecvDataSize = 0;
@@ -163,7 +198,7 @@ void CSimpleSocket::RecvData(SOCKET& connSocket)
 		if (nRecvSize > 0)
 		{
 			nRecvDataSize += nRecvSize;
-			memcpy(pIncr, recvBuf, nRecvSize);
+			SAFE_COPY(pIncr, recvBuf, nRecvSize);
 			pBuf = dataBuf;
 			pIncr += nRecvSize;
 			int nDataSize = 0;
@@ -195,9 +230,9 @@ void CSimpleSocket::RecvData(SOCKET& connSocket)
 				{
 					if (nDataSize > BUF_SIZE * 2)
 					{
-						Log(L"RecvData, Send data size larger than buf, the data size is %d. \n", nDataSize);
+						Log("RecvData, Send data size larger than buf, the data size is %d. \n", nDataSize);
 					}
-					memcpy(dataBuf, pBuf, nRecvDataSize);
+					SAFE_COPY(dataBuf, pBuf, nRecvDataSize);
 					pIncr = dataBuf + nRecvDataSize;
 					break;
 				}
@@ -210,13 +245,13 @@ void CSimpleSocket::RecvData(SOCKET& connSocket)
 		}
 		else
 		{
-			Log(L"RecvData Error : %d \n", WSAGetLastError());
+			Log("RecvData Error : %d \n", GetSocketErrorCode());
 			s = INVALID_SOCKET;
 		}
 	}
 }
 
-void CSimpleSocket::RecvDataEx(SOCKET& connSocket)
+void CSimpleSocket::RecvDataEx(socket_r& connSocket)
 {
 	int nDataBufSize = BUF_SIZE * 2;	// save the buffer size, the initial size is BUF_SIZE * 2.
 	char* pRawDataBuf = new char[nDataBufSize];	// point to raw data buffer
@@ -246,11 +281,11 @@ void CSimpleSocket::RecvDataEx(SOCKET& connSocket)
 					char* pNewDataBuf = new char[nDataBufSize];
 					if (pNewDataBuf == NULL)
 					{
-						Log(L"RecvDataEx: allocate new space failed, the need size is %d \n", nDataBufSize);
+						Log("RecvDataEx: allocate new space failed, the need size is %d \n", nDataBufSize);
 						return;
 					}
 					// copy data to new data buf.
-					memcpy(pNewDataBuf, pPackageData, nRecvDataSize);
+					SAFE_COPY(pNewDataBuf, pPackageData, nRecvDataSize);
 					// release original buf
 					if (pRawDataBuf)
 						delete[]pRawDataBuf;
@@ -261,13 +296,13 @@ void CSimpleSocket::RecvDataEx(SOCKET& connSocket)
 				}
 				else
 				{	// buffer has been overflow by new data, we rewrite the unhandle data to header of the raw data buffer.
-					memcpy(pRawDataBuf, pPackageData, nRecvDataSize);
+					SAFE_COPY(pRawDataBuf, pPackageData, nRecvDataSize);
 					pIncr = pRawDataBuf + nRecvDataSize;
 					pPackageData = pRawDataBuf;
 				}
 			}
 			// copy new arrived data to data buffer.
-			memcpy(pIncr, recvBuf, nRecvSize);
+			SAFE_COPY(pIncr, recvBuf, nRecvSize);
 			nRecvDataSize += nRecvSize;
 			pIncr += nRecvSize;
 
@@ -283,11 +318,11 @@ void CSimpleSocket::RecvDataEx(SOCKET& connSocket)
 					char* pNewDataBuf = new char[nDataBufSize];
 					if (pNewDataBuf == NULL)
 					{
-						Log(L"RecvDataEx: allocate new space failed, the need size is %d \n", nDataBufSize);
+						Log("RecvDataEx: allocate new space failed, the need size is %d \n", nDataBufSize);
 						return;
 					}
 					// copy data to new data buf.
-					memcpy(pNewDataBuf, pPackageData, nRecvDataSize);
+					SAFE_COPY(pNewDataBuf, pPackageData, nRecvDataSize);
 					// release original buf
 					if (pRawDataBuf)
 						delete[]pRawDataBuf;
@@ -313,7 +348,7 @@ void CSimpleSocket::RecvDataEx(SOCKET& connSocket)
 					nPackageDataSize = 0;
 					if (nRecvDataSize < sizeof(SOCK_MESSAGE_HEADER))
 					{	// if recv data is less than package header size, we copy data and continue to recevie data.
-						memcpy(pRawDataBuf, pPackageData, nRecvDataSize);
+						SAFE_COPY(pRawDataBuf, pPackageData, nRecvDataSize);
 						pPackageData = pRawDataBuf;
 						pIncr = pRawDataBuf + nRecvDataSize;
 						break;
@@ -327,12 +362,12 @@ void CSimpleSocket::RecvDataEx(SOCKET& connSocket)
 			}
 		}
 		else if (nRecvSize == 0)
-		{	// connection has closed. To do ...
+		{	// connection has closed. To do ... if we should set connSocket to INVALID_SOCKET
 			connSocket = INVALID_SOCKET;
 		}
 		else
 		{
-			Log(L"RecvDataEx Error : %d \n", WSAGetLastError());
+			Log("RecvDataEx Error : %d \n", GetSocketErrorCode());
 			connSocket = INVALID_SOCKET;
 		}
 	}
@@ -341,9 +376,9 @@ void CSimpleSocket::RecvDataEx(SOCKET& connSocket)
 		delete[]pRawDataBuf;
 }
 
-BOOL CSimpleSocket::SendData(const SOCKET& s, int dataType, const char* pData, int nDataSize)
+bool CSimpleSocket::SendData(const socket_r& s, int dataType, const char* pData, int nDataSize)
 {
-	BOOL bRet = FALSE;
+	bool bRet = false;
 	char* pAllocBuf = NULL;
 	char* pBuf = NULL;
 	if (s != INVALID_SOCKET)
@@ -373,11 +408,11 @@ BOOL CSimpleSocket::SendData(const SOCKET& s, int dataType, const char* pData, i
 		memcpy(pBuf + smh.headerSize, pData, nDataSize);
 		int iResult = send(s, pBuf, smh.headerSize + smh.dataSize, 0);
 
-		bRet = TRUE;
+		bRet = true;
 		if (iResult == SOCKET_ERROR)
 		{
 			// log
-			bRet = FALSE;
+			bRet = false;
 		}
 	}
 
@@ -387,29 +422,37 @@ BOOL CSimpleSocket::SendData(const SOCKET& s, int dataType, const char* pData, i
 	return bRet;
 }
 
-BOOL CSimpleSocket::SendData(int dataType, const char* pData, int nDataSize)
+bool CSimpleSocket::SendData(int dataType, const char* pData, int nDataSize)
 {
 	return SendData(m_cltSocket, dataType, pData, nDataSize);
 }
 
-BOOL CSimpleSocket::StartNetwork(std::string strIP, unsigned short uPort, NETWORK_PATTERN np, HandleDataFunc pHandleDataFunc)
+bool CSimpleSocket::StartNetwork(const std::string strIP, unsigned short uPort, NETWORK_PATTERN np, HandleDataFunc pHandleDataFunc)
 {
-	BOOL bRet = TRUE;
+	bool bRet = true;
 	if (strIP.empty() || uPort == 0 || pHandleDataFunc == NULL || m_bConnected)
 	{
-		return FALSE;
+		return false;
 	}
-	Log(L"Start network ... \n");
+	Log("Start network ... \n");
 	m_fsCallBack = fs_normal;
 	HandleData = pHandleDataFunc;
 	m_workPattern = np;
 
+#ifdef _WIN32
 	if (m_workPattern == np_client || m_workPattern == np_client_ex)
+#else
+	if (m_workPattern == np_client)
+#endif
 	{
 		std::thread thread_clt(&CSimpleSocket::CreateMsgClientTcp, this, strIP, uPort);
 		thread_clt.detach();
 	}
+#ifdef _WIN32
 	else if (m_workPattern == np_server || m_workPattern == np_server_ex)
+#else
+	else
+#endif
 	{
 		std::thread thread_srv(&CSimpleSocket::CreateMsgServerTcp, this, strIP, uPort);
 		thread_srv.detach();
@@ -418,29 +461,36 @@ BOOL CSimpleSocket::StartNetwork(std::string strIP, unsigned short uPort, NETWOR
 	return bRet;
 }
 
-BOOL CSimpleSocket::StartNetwork(std::string strIP, unsigned short uPort, NETWORK_PATTERN np, STD_HandleDataFunc pHandleDataFunc)
+bool CSimpleSocket::StartNetwork(const std::string strIP, unsigned short uPort, NETWORK_PATTERN np, STD_HandleDataFunc pHandleDataFunc)
 {
-	BOOL bRet = TRUE;
+	bool bRet = true;
 	if (strIP.empty() || uPort == 0 || pHandleDataFunc == NULL || m_bConnected)
 	{
-		return FALSE;
+		return false;
 	}
-	Log(L"Start network ... \n");
+	Log("Start network ... \n");
 	m_fsCallBack = fs_stdBind;
 	STD_HandleData = pHandleDataFunc;
 	m_workPattern = np;
 
+#ifdef _WIN32
 	if (m_workPattern == np_client || m_workPattern == np_client_ex)
+#else
+	if (m_workPattern == np_client)
+#endif
 	{
 		std::thread thread_clt(&CSimpleSocket::CreateMsgClientTcp, this, strIP, uPort);
 		thread_clt.detach();
 	}
+#ifdef _WIN32
 	else if (m_workPattern == np_server || m_workPattern == np_server_ex)
+#else
+	else
+#endif
 	{
 		std::thread thread_srv(&CSimpleSocket::CreateMsgServerTcp, this, strIP, uPort);
 		thread_srv.detach();
 	}
-
 	return bRet;
 }
 
@@ -449,21 +499,27 @@ void CSimpleSocket::StopNetwork()
 	m_bStop = true;
 	std::lock_guard<std::mutex> mlock(mutex_socketInfos);
 
-	switch (m_workPattern)
-	{
-	case np_client:
-		closesocket(m_cltSocket);
-		break;
-	case np_server:
+	if (m_workPattern != np_client){
+
 		for (auto it = m_socketInfos.begin(); it != m_socketInfos.end(); it++)
 		{
+#ifdef _WIN32
 			shutdown(it->first, SD_SEND);
+#else
+			shutdown(it->first, SHUT_RD);
+			if(m_epfd){
+				remove_fd(m_epfd, it->first);
+			}
+			if(it->second.pBuf){
+				delete [](it->second.pBuf);
+			}
+#endif
 			closesocket(it->first);
 		}
 		m_socketInfos.clear();
-		break;
-	default:
-		break;
+	}
+	else{
+		closesocket(m_cltSocket);
 	}
 }
 
@@ -472,7 +528,7 @@ bool CSimpleSocket::GetNetworkConnStatus()
 	return m_bConnected;
 }
 
-void CSimpleSocket::SetSocketFailed(SOCKET& s)
+void CSimpleSocket::SetSocketFailed(socket_r& s)
 {
 	std::lock_guard<std::mutex> mlock(mutex_socketInfos);
 	auto iter = m_socketInfos.find(s);
@@ -480,29 +536,34 @@ void CSimpleSocket::SetSocketFailed(SOCKET& s)
 	{
 		// (*iter).second.bAlive = false;
 		// For now, just erase the socket record.
+		
+		if (iter->second.pBuf) {
+			delete [](iter->second.pBuf);
+		}
+		
 		m_socketInfos.erase(iter);
 	}
 }
 
-void CSimpleSocket::SetLogCallBackFunc(LogFuncW logFunc)
+void CSimpleSocket::SetLogCallBackFunc(LogFunc logFunc)
 {
 	if (logFunc)
 	{
 		CallBackLog = logFunc;
-		Log(L"Set callback function success. \n");
+		Log("Set callback function success. \n");
 	}
 }
 
-void CSimpleSocket::SetLogCallBackFunc(STD_LogFuncW logFunc)
+void CSimpleSocket::SetLogCallBackFunc(STD_LogFunc logFunc)
 {
 	if (logFunc)
 	{
 		STD_CallBackLog = logFunc;
-		Log(L"Set std callback function success. \n");
+		Log("Set std callback function success. \n");
 	}
 }
 
-void CSimpleSocket::LogOutput(const wchar_t* pLogStr)
+void CSimpleSocket::LogOutput(const char* pLogStr)
 {
 	if (CallBackLog != NULL)
 	{
@@ -510,31 +571,215 @@ void CSimpleSocket::LogOutput(const wchar_t* pLogStr)
 	}
 	else if (STD_CallBackLog != nullptr)
 	{
-		std::wstring strLog = pLogStr;
+		std::string strLog = pLogStr;
 		STD_CallBackLog(strLog);
 	}
 	else
 	{// default output debug info to DebugView(windows) or console(Linux)
-		OutputDebugString(pLogStr);
+#if defined(_win32)
+		OutputDebugStringA(pLogStr);
+#else
+		printf(pLogStr);
+#endif
 	}
 }
 
-void CSimpleSocket::Log(wchar_t* FormatStr, ...)
+void CSimpleSocket::Log(const char* FormatStr, ...)
 {
-	wchar_t wszLogStr[LOG_BUF_SIZE];
+	char szLogStr[LOG_BUF_SIZE];
 	va_list _Arglist;
 	int _Ret;
+
+#if defined(_win32)
 	_crt_va_start(_Arglist, FormatStr);
-	_Ret = _vswprintf_c_l(wszLogStr, sizeof(wszLogStr), FormatStr, NULL, _Arglist);
+	// _Ret = _vswprintf_c_l(wszLogStr, sizeof(wszLogStr), FormatStr, NULL, _Arglist);
+	_Ret = _vsprintf_c_l(wszLogStr, sizeof(szLogStr), FormatStr, NULL, _Arglist);
 	_crt_va_end(_Arglist);
+#else
+	va_start(_Arglist, FormatStr);
+	vsnprintf(szLogStr, sizeof(szLogStr), FormatStr, _Arglist);
+	va_end(_Arglist);
+#endif
 	
 	if (_Ret > 0)
 	{
-		LogOutput(wszLogStr);
+		LogOutput(szLogStr);
 	}
 	else
 	{
-		LogOutput(L"Log: log error. \n");
+		LogOutput("Log: log error. \n");
 	}
 }
 
+#ifndef _WIN32
+int CSimpleSocket::GetSocketErrorCode()
+{
+#ifdef _WIN32
+	return GetLastError();
+#else
+	return errno;
+#endif
+}
+
+void CSimpleSocket::AddSocketInfo(const socket_r& connSock)
+{
+	SOCKET_INFO si;
+	si.bAlive = true;
+	si.nRecvSize = 0;
+	si.pBuf = new char[BUF_SIZE];
+	m_socketInfos[connSock] = si;
+}
+
+void CSimpleSocket::DelSocketInfo(const socket_r& connSock)
+{
+	mutex_socketInfos.lock();
+	auto iter = m_socketInfos.find(connSock);
+	if (iter != m_socketInfos.end()) {	
+		if (iter->second.pBuf) {
+			delete [](iter->second.pBuf);
+		}
+	}
+	mutex_socketInfos.lock();
+}
+
+int CSimpleSocket::set_nonblocking(int fd)
+{
+	int old_opt = fcntl(fd, F_GETFD);
+	int new_opt = old_opt | O_NONBLOCK;
+	fcntl(fd, F_SETFD, new_opt);
+	return old_opt;
+}
+
+void CSimpleSocket::add_fd(int epollfd, int fd, bool enable_et)
+{
+	struct epoll_event event;
+	event.data.fd = fd;
+	event.events = EPOLLIN;
+	if(enable_et){
+		event.events |= EPOLLET;
+	}
+
+	if (epoll_ctl(epollfd, EPOLL_CTL_ADD, fd, &event) == INVALID_SOCKET) {
+		Log("epoll_ctl: add fd: %d, error code : %d", fd, errno);
+	}
+}
+
+void CSimpleSocket::remove_fd(int epollfd, int fd)
+{
+	if (epoll_ctl(epollfd, EPOLL_CTL_DEL, fd, 0) == INVALID_SOCKET) {
+		Log("epoll_ctl: remove fd %d, error code : %d", fd, errno);
+	}
+}
+
+void CSimpleSocket::lt(epoll_event* events, int num, int epollfd, int listenfd)
+{
+    char buf[BUF_SIZE];
+	for(int i = 0; i < num; i++){
+		int sockfd = events[i].data.fd;
+		if(sockfd == listenfd){
+			struct sockaddr_in clientaddr;
+			socklen_t addrlen = sizeof(clientaddr);
+			int connSock = accept(listenfd, (struct sockaddr *) &clientaddr, &addrlen);
+			if (connSock == INVALID_SOCKET) {
+				Log("accept a new client failed, ip addr: %s, port: %d, error id: %d", inet_ntoa(clientaddr.sin_addr),
+				 clientaddr.sin_port, errno);
+			}			
+			set_nonblocking(connSock);
+			add_fd(epollfd, connSock, false);	// level triger
+		}else if(events[i].events & EPOLLIN){	// for small data which size less than 1K.
+			Log("event trigger once\n");
+			memset(buf, '\0', BUF_SIZE);
+			int ret = recv(sockfd, buf, BUF_SIZE - 1, 0);
+			if(ret <= 0){
+				closesocket(sockfd);
+				continue;
+			}
+		}else if(events[i].events & EPOLLOUT){
+			// like EPOLLIN, we now just send a response. There will be a thread pool to write if need.
+			SendData(1, "I get your message.", sizeof("I get your message."));
+		}else if(events[i].events & EPOLLRDHUP)
+		{
+			// Log("");
+			remove_fd(m_epfd, events[i].data.fd);
+			closesocket(events[i].data.fd);
+		}else if(events[i].events & EPOLLERR)
+		{
+			// Log("some error happenned, ip addr: %s, port: %d, error id: %d", inet_ntoa(clientaddr.sin_addr),
+			// 	 clientaddr.sin_port, errno);
+		}else{
+			Log("something else happened \n");
+		}
+	}
+}
+
+void CSimpleSocket::et(epoll_event* events, int num, int epollfd, int listenfd)
+{
+	char buf[BUF_SIZE];
+	for(int i = 0; i < num; i++){
+		int sockfd = events[i].data.fd;
+		if(sockfd == listenfd){
+			struct sockaddr_in clientaddr;
+			socklen_t addrlen = sizeof(clientaddr);
+			int connSock = accept(listenfd, (struct sockaddr *) &clientaddr, &addrlen);
+			if (connSock == INVALID_SOCKET) {
+				Log("accept a new client failed, ip addr: %s, port: %d, error id: %d", inet_ntoa(clientaddr.sin_addr),
+				 clientaddr.sin_port, errno);
+			}			
+			set_nonblocking(connSock);
+			add_fd(epollfd, connSock, true);	// edge triger
+		}else if(events[i].events & EPOLLIN){
+			// here we will call a thread pool to handle the data. now we just create a tmp thread. To do ... 
+			int connSock = events[i].data.fd;
+			// std::thread th_handler(&CSimpleSocket::RecvDataEx, this, connSock);
+			// th_handler.detach();
+		}else if(events[i].events & EPOLLOUT){
+			// like EPOLLIN, we now just send a response. There will be a thread pool to write if need.
+			SendData(1, "I get your message.", sizeof("I get your message."));
+		}else if(events[i].events & EPOLLRDHUP)
+		{
+			// Log("");
+			remove_fd(m_epfd, events[i].data.fd);
+			closesocket(events[i].data.fd);
+		}else if(events[i].events & EPOLLERR)
+		{
+			// Log("some error happenned, ip addr: %s, port: %d, error id: %d", inet_ntoa(clientaddr.sin_addr),
+			// 	 clientaddr.sin_port, errno);
+		}else{
+			Log("something else happened \n");
+		}
+	}
+}
+
+void CSimpleSocket::handle_epoll_event(epoll_event* events, int num, int epollfd, int listenfd)
+{	
+	for(int i = 0; i < num; ++i)
+	{	
+		if (events[i].data.fd == listenfd) {
+			struct sockaddr_in clientaddr;
+			socklen_t addrlen = sizeof(clientaddr);
+			int connSock = accept(listenfd, (struct sockaddr *) &clientaddr, &addrlen);
+			if (connSock == INVALID_SOCKET) {
+				Log("accept a new client. ");
+			}			
+			set_nonblocking(connSock);
+			if(m_workPattern == np_server_epoll_et){
+				add_fd(m_epfd, connSock);
+			}
+			else if(m_workPattern == np_server_epoll_lt){
+				add_fd(m_epfd, connSock, false);
+			}
+		}
+		else if (events[i].events & EPOLLET) {
+			// et_single();
+			Log("");
+		}
+		else{
+			// lt_single();
+			Log("");
+		}
+	}
+}
+
+#endif
+
+}// SIMPLE_SOCKET namespace end

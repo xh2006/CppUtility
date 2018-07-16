@@ -1,0 +1,7 @@
+# Directorys
+/.vscode
+/build
+
+# Files
+main.cpp
+CMakeLists.txt
