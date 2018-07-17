@@ -48,11 +48,11 @@ CSimpleSocket::~CSimpleSocket()
 
 void CSimpleSocket::CreateMsgServerTcp(std::string strIP, unsigned short uPort)
 {
+#ifndef _WIN32
 	struct epoll_event ev,events[MAX_EVENTS];
 	m_epfd = epoll_create(1024);
+#endif
 
-	struct sockaddr addr;
-	socklen_t addrlen = 0;
 	//----------------------
 	// Create a socket_r for listening, for incoming connection requests.
 	socket_r listenSocket;
@@ -61,10 +61,10 @@ void CSimpleSocket::CreateMsgServerTcp(std::string strIP, unsigned short uPort)
 		Log("Error at socket(): %d\n", GetSocketErrorCode());
 		return;
 	}
-
+#ifndef _WIN32
 	// add listen socket.
 	add_fd(m_epfd, listenSocket);
-
+#endif
 	//----------------------
 	// The sockaddr_in structure specifies the address family,
 	// IP address, and port for the socket that is being bound.
@@ -125,7 +125,6 @@ void CSimpleSocket::CreateMsgServerTcp(std::string strIP, unsigned short uPort)
 		else if(m_workPattern == np_server_epoll_lt){
 			lt(events, nfds, m_epfd, listenSocket);
 		}
-
 #endif
 	}
 }
@@ -497,7 +496,7 @@ bool CSimpleSocket::StartNetwork(const std::string strIP, unsigned short uPort, 
 void CSimpleSocket::StopNetwork()
 {
 	m_bStop = true;
-	std::lock_guard<std::mutex> mlock(mutex_socketInfos);
+	std::lock_guard<std::mutex> mlock(m_mutexSocketInfos);
 
 	if (m_workPattern != np_client){
 
@@ -530,7 +529,7 @@ bool CSimpleSocket::GetNetworkConnStatus()
 
 void CSimpleSocket::SetSocketFailed(socket_r& s)
 {
-	std::lock_guard<std::mutex> mlock(mutex_socketInfos);
+	std::lock_guard<std::mutex> mlock(m_mutexSocketInfos);
 	auto iter = m_socketInfos.find(s);
 	if (iter != m_socketInfos.end())
 	{
@@ -588,7 +587,7 @@ void CSimpleSocket::Log(const char* FormatStr, ...)
 {
 	char szLogStr[LOG_BUF_SIZE];
 	va_list _Arglist;
-	int _Ret;
+	int _Ret = 0;
 
 #if defined(_win32)
 	_crt_va_start(_Arglist, FormatStr);
@@ -597,7 +596,7 @@ void CSimpleSocket::Log(const char* FormatStr, ...)
 	_crt_va_end(_Arglist);
 #else
 	va_start(_Arglist, FormatStr);
-	vsnprintf(szLogStr, sizeof(szLogStr), FormatStr, _Arglist);
+	vsnprintf_s(szLogStr, sizeof(szLogStr), FormatStr, _Arglist);
 	va_end(_Arglist);
 #endif
 	
@@ -611,7 +610,6 @@ void CSimpleSocket::Log(const char* FormatStr, ...)
 	}
 }
 
-#ifndef _WIN32
 int CSimpleSocket::GetSocketErrorCode()
 {
 #ifdef _WIN32
@@ -621,6 +619,7 @@ int CSimpleSocket::GetSocketErrorCode()
 #endif
 }
 
+#ifndef _WIN32
 void CSimpleSocket::AddSocketInfo(const socket_r& connSock)
 {
 	SOCKET_INFO si;
@@ -632,14 +631,14 @@ void CSimpleSocket::AddSocketInfo(const socket_r& connSock)
 
 void CSimpleSocket::DelSocketInfo(const socket_r& connSock)
 {
-	mutex_socketInfos.lock();
+	m_mutexSocketInfos.lock();
 	auto iter = m_socketInfos.find(connSock);
 	if (iter != m_socketInfos.end()) {	
 		if (iter->second.pBuf) {
 			delete [](iter->second.pBuf);
 		}
 	}
-	mutex_socketInfos.lock();
+	m_mutexSocketInfos.lock();
 }
 
 int CSimpleSocket::set_nonblocking(int fd)
@@ -783,3 +782,4 @@ void CSimpleSocket::handle_epoll_event(epoll_event* events, int num, int epollfd
 #endif
 
 }// SIMPLE_SOCKET namespace end
+

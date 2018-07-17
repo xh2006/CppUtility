@@ -86,7 +86,6 @@ For Client:
 
 namespace SIMPLE_SOCKET
 {
-
 // socket representative
 #ifdef _WIN32
 #define socket_r		intptr_t
@@ -200,7 +199,7 @@ namespace SIMPLE_SOCKET
 		bool m_bConnected;	// 
 
 		SOCKET_INFOS m_socketInfos;
-		std::mutex mutex_socketInfos;
+		std::mutex m_mutexSocketInfos;
 		FUNC_STYLE m_fsCallBack;	
 	};
 }
