@@ -52,8 +52,7 @@ SharedQueue<T>::~SharedQueue() {}
 template <typename T>
 T &SharedQueue<T>::front()
 {
-    std::unique_lock<std::mutex> mlock(mutex_);
-    cond_.wait(mlock, [this] { return !queue_.empty(); });
+    std::lock_guard<std::mutex> mlock(mutex_);
     return queue_.front();
 }
 
