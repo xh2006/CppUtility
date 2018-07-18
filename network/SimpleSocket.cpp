@@ -62,8 +62,10 @@ void CSimpleSocket::CreateMsgServerTcp(std::string strIP, unsigned short uPort)
 		return;
 	}
 
+#ifndef _WIN32
 	// add listen socket.
 	add_fd(m_epfd, listenSocket);
+#endif
 
 	//----------------------
 	// The sockaddr_in structure specifies the address family,
@@ -102,17 +104,13 @@ void CSimpleSocket::CreateMsgServerTcp(std::string strIP, unsigned short uPort)
 
 		if (m_workPattern == np_server)
 		{
-			SOCKET_INFO si;
-			si.bAlive = true;
-			m_socketInfos[connSock] = si;
+			AddSocketInfo(connSock);
 			std::thread th(&CSimpleSocket::RecvData, this, connSock);
 			th.detach();
 		}
 		else if (m_workPattern == np_server_ex)
 		{
-			SOCKET_INFO si;
-			si.bAlive = true;
-			m_socketInfos[connSock] = si;
+			AddSocketInfo(connSock);
 			std::thread th(&CSimpleSocket::RecvDataEx, this, connSock);
 			th.detach();
 		}
@@ -627,19 +625,22 @@ void CSimpleSocket::AddSocketInfo(const socket_r& connSock)
 	si.bAlive = true;
 	si.nRecvSize = 0;
 	si.pBuf = new char[BUF_SIZE];
+	if (!si.pBuf) {
+		Log("alloc memory failed. the connect socket is: %d", connSock);
+	}
+	std::lock_guard<std::mutex> mlock(mutex_socketInfos);
 	m_socketInfos[connSock] = si;
 }
 
 void CSimpleSocket::DelSocketInfo(const socket_r& connSock)
 {
-	mutex_socketInfos.lock();
+	std::lock_guard<std::mutex> mlock(mutex_socketInfos);
 	auto iter = m_socketInfos.find(connSock);
 	if (iter != m_socketInfos.end()) {	
 		if (iter->second.pBuf) {
 			delete [](iter->second.pBuf);
 		}
 	}
-	mutex_socketInfos.lock();
 }
 
 int CSimpleSocket::set_nonblocking(int fd)
@@ -686,12 +687,15 @@ void CSimpleSocket::lt(epoll_event* events, int num, int epollfd, int listenfd)
 			}			
 			set_nonblocking(connSock);
 			add_fd(epollfd, connSock, false);	// level triger
+			AddSocketInfo(connSock);	// add the connect socket
 		}else if(events[i].events & EPOLLIN){	// for small data which size less than 1K.
 			Log("event trigger once\n");
 			memset(buf, '\0', BUF_SIZE);
 			int ret = recv(sockfd, buf, BUF_SIZE - 1, 0);
 			if(ret <= 0){
 				closesocket(sockfd);
+				DelSocketInfo(sockfd);
+				Log("recv error, error code: %d", GetSocketErrorCode());
 				continue;
 			}
 		}else if(events[i].events & EPOLLOUT){
@@ -727,10 +731,11 @@ void CSimpleSocket::et(epoll_event* events, int num, int epollfd, int listenfd)
 			}			
 			set_nonblocking(connSock);
 			add_fd(epollfd, connSock, true);	// edge triger
+			AddSocketInfo(connSock);	// add the connect socket
 		}else if(events[i].events & EPOLLIN){
 			// here we will call a thread pool to handle the data. now we just create a tmp thread. To do ... 
-			int connSock = events[i].data.fd;
-			// std::thread th_handler(&CSimpleSocket::RecvDataEx, this, connSock);
+			// int conn = events[i].data.fd;
+			// std::thread th_handler(&CSimpleSocket::RecvDataEx, this, conn);
 			// th_handler.detach();
 		}else if(events[i].events & EPOLLOUT){
 			// like EPOLLIN, we now just send a response. There will be a thread pool to write if need.

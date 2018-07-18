@@ -63,6 +63,7 @@ For Client:
 #include <string>
 #include <thread>
 #include <map>
+#include <unordered_map>
 #include <mutex>
 #include <functional>
 #include <memory>
@@ -135,11 +136,13 @@ namespace SIMPLE_SOCKET
 	struct SOCKET_INFO
 	{
 		bool bAlive;
-		char* pBuf;
-		// share_ptr<char*> pBuf;
+		sockaddr clientIP;
+		ushort clientPort;
+		char* pBuf;		// point to a buf which save the socket's data.
+		// std::share_ptr<char*> pBuf;
 		int nRecvSize;
 	};
-	typedef std::map<socket_r, SOCKET_INFO> SOCKET_INFOS;
+	typedef std::unordered_map<socket_r, SOCKET_INFO> SOCKET_INFOS;
 
 	typedef void(*HandleDataFunc)(const socket_r connSocket, SOCK_MESSAGE_HEADER& smh, const char* pDataBuf);
 	typedef std::function<void(const socket_r connSocket, SOCK_MESSAGE_HEADER& smh, const char* pDataBuf)> STD_HandleDataFunc;
