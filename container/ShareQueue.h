@@ -23,102 +23,89 @@
 template <typename T>
 class SharedQueue
 {
-public:
-	SharedQueue();
-	~SharedQueue();
+  public:
+    SharedQueue();
+    ~SharedQueue();
 
-	T& front();
-	void pop_front();
-	T& pop_front_value();
+    T &front();
+    void pop_front();
+    T &pop_front_value();
 
-	void push_back(const T& item);
-	void push_back(T&& item);
+    void push_back(const T &item);
+    void push_back(T &&item);
 
-	int size();
-	bool empty();
+    int size();
+    bool empty();
 
-private:
-	std::deque<T> queue_;
-	std::mutex mutex_;
-	std::condition_variable cond_;
+  private:
+    std::deque<T> queue_;
+    std::mutex mutex_;
+    std::condition_variable cond_;
 };
 
+template <typename T>
+SharedQueue<T>::SharedQueue() {}
 
 template <typename T>
-SharedQueue<T>::SharedQueue(){}
+SharedQueue<T>::~SharedQueue() {}
 
 template <typename T>
-SharedQueue<T>::~SharedQueue(){}
-
-template <typename T>
-T& SharedQueue<T>::front()
+T &SharedQueue<T>::front()
 {
-	std::unique_lock<std::mutex> mlock(mutex_);
-	while (queue_.empty())
-	{
-		cond_.wait(mlock);
-	}
-	return queue_.front();
+    std::lock_guard<std::mutex> mlock(mutex_);
+    return queue_.front();
 }
 
 template <typename T>
 void SharedQueue<T>::pop_front()
 {
-	std::unique_lock<std::mutex> mlock(mutex_);
-	while (queue_.empty())
-	{
-		cond_.wait(mlock);
-	}
-	queue_.pop_front();
+    std::unique_lock<std::mutex> mlock(mutex_);
+    cond_.wait(mlock, [this] { return !queue_.empty(); });
+    queue_.pop_front();
 }
 
 template <typename T>
-T& SharedQueue<T>::pop_front_value()
+T &SharedQueue<T>::pop_front_value()
 {
-	std::unique_lock<std::mutex> mlock(mutex_);
-	while (queue_.empty())
-	{
-		cond_.wait(mlock);
-	}
-	static T data;
-	data = queue_.front();
-	queue_.pop_front();
-	return data;
+    std::unique_lock<std::mutex> mlock(mutex_);
+    cond_.wait(mlock, [this] { return !queue_.empty(); });
+    T data = queue_.front();
+    queue_.pop_front();
+    return data;
 }
 
 template <typename T>
-void SharedQueue<T>::push_back(const T& item)
+void SharedQueue<T>::push_back(const T &item)
 {
-	std::unique_lock<std::mutex> mlock(mutex_);
-	queue_.push_back(item);
-	mlock.unlock();     // unlock before notification to minimize mutex con
-	cond_.notify_one(); // notify one waiting thread
+    {
+        std::lock_guard<std::mutex> mlock(mutex_);
+        queue_.push_back(item);
+    }
+    cond_.notify_one(); // notify one waiting thread
 }
 
 template <typename T>
-void SharedQueue<T>::push_back(T&& item)
+void SharedQueue<T>::push_back(T &&item)
 {
-	std::unique_lock<std::mutex> mlock(mutex_);
-	queue_.push_back(std::move(item));
-	mlock.unlock();     // unlock before notification to minimize mutex con
-	cond_.notify_one(); // notify one waiting thread
+    {
+        std::lock_guard<std::mutex> mlock(mutex_);
+        queue_.push_back(std::move(item));
+    }
+    cond_.notify_one(); // notify one waiting thread
 }
 
 template <typename T>
 int SharedQueue<T>::size()
 {
-	std::unique_lock<std::mutex> mlock(mutex_);
-	int size = queue_.size();
-	mlock.unlock();
-	return size;
+    std::lock_guard<std::mutex> mlock(mutex_);
+    return queue_.size();
 }
 
 template <typename T>
 bool SharedQueue<T>::empty()
 {
-	std::unique_lock<std::mutex> mlock(mutex_);
-	return queue_.empty();
+    std::lock_guard<std::mutex> mlock(mutex_);
+    return queue_.empty();
 }
 
 #endif
-
