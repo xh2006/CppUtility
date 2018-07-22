@@ -106,7 +106,7 @@ void CSimpleSocket::CreateMsgServerTcp(std::string strIP, unsigned short uPort)
 			si.bAlive = true;
 			m_socketInfos[connSock] = si;
 			std::thread th(&CSimpleSocket::RecvData, this, connSock);
-			th.detach();
+			th.join();
 		}
 		else if (m_workPattern == np_server_ex)
 		{
@@ -114,7 +114,7 @@ void CSimpleSocket::CreateMsgServerTcp(std::string strIP, unsigned short uPort)
 			si.bAlive = true;
 			m_socketInfos[connSock] = si;
 			std::thread th(&CSimpleSocket::RecvDataEx, this, connSock);
-			th.detach();
+			th.join();
 		}
 #else
 		int nfds = epoll_wait(m_epfd, events, MAX_EVENTS, 500);
@@ -250,10 +250,29 @@ void CSimpleSocket::RecvData(socket_r& connSocket)
 	}
 }
 
+bool CSimpleSocket::ReallocBufAndCopyData(int nNeedSize, int& nAllocSize, char** ppBuf, char* pData, int nRecvDataSize)
+{
+    nAllocSize = nNeedSize % BUF_SIZE ? (nNeedSize / BUF_SIZE + 2) * BUF_SIZE : (nNeedSize / BUF_SIZE + 1) * BUF_SIZE;
+    char* pNewDataBuf = new char[nAllocSize];
+    if (pNewDataBuf == NULL)
+    {
+        Log("RecvDataEx: allocate new space failed, the need size is %d \n", nAllocSize);
+        return false;
+    }
+    // copy data to new data buf.
+    SAFE_COPY(pNewDataBuf, pData, nRecvDataSize);
+    // release original buf
+    if (*ppBuf)
+        delete[](*ppBuf);
+
+    *ppBuf = pNewDataBuf;
+    return true;
+}
+
 void CSimpleSocket::RecvDataEx(socket_r& connSocket)
 {
 	int nDataBufSize = BUF_SIZE * 2;	// save the buffer size, the initial size is BUF_SIZE * 2.
-	char* pRawDataBuf = new char[nDataBufSize];	// point to raw data buffer
+	char* pRawDataBuf = new char[nDataBufSize];	// always point to raw data buffer we allocated.
 	char* pIncr = pRawDataBuf;		// the increment position in the data buffer.
 	int nRecvDataSize = 0;		// the size of received total data in raw data buffer.
 	char recvBuf[BUF_SIZE];		// socket recv buf
@@ -266,30 +285,25 @@ void CSimpleSocket::RecvDataEx(socket_r& connSocket)
 		{// if the socket is invalid, we quit the thread.
 			break;
 		}
-		m_bConnected = true;
 
 		int nRecvSize = recv(connSocket, recvBuf, sizeof(recvBuf), 0);
 		if (nRecvSize > 0)
 		{	// check if the pRawDataBuf has enough space to save the new arrived data.
+            if (nRecvDataSize < sizeof(SOCK_MESSAGE_HEADER))
+            {   // when we haven't get a whole header, we just save the received data.
+                SAFE_COPY(pIncr, recvBuf, nRecvSize);
+                nRecvDataSize += nRecvSize;
+                pIncr += nRecvSize;
+                continue;
+            }
+
 			if ((nDataBufSize - (pIncr - pRawDataBuf)) < nRecvSize)
 			{	// check if the raw data buffer can save the new arrive data.
 				if (nRecvDataSize + nRecvSize > nDataBufSize)
 				{	// if not, realloc the raw data buffer with bigger size.
 					int nSaveSize = nRecvDataSize + nRecvSize;
-					nDataBufSize = nSaveSize % BUF_SIZE ? (nSaveSize / BUF_SIZE + 2) * BUF_SIZE : (nSaveSize / BUF_SIZE + 1) * BUF_SIZE;
-					char* pNewDataBuf = new char[nDataBufSize];
-					if (pNewDataBuf == NULL)
-					{
-						Log("RecvDataEx: allocate new space failed, the need size is %d \n", nDataBufSize);
-						return;
-					}
-					// copy data to new data buf.
-					SAFE_COPY(pNewDataBuf, pPackageData, nRecvDataSize);
-					// release original buf
-					if (pRawDataBuf)
-						delete[]pRawDataBuf;
-
-					pRawDataBuf = pNewDataBuf;
+                    if (!ReallocBufAndCopyData(nSaveSize, nDataBufSize, &pRawDataBuf, pPackageData, nRecvDataSize))
+                        goto clean;
 					pPackageData = pIncr = pRawDataBuf;
 					pIncr += nRecvDataSize;
 				}
@@ -313,20 +327,8 @@ void CSimpleSocket::RecvDataEx(socket_r& connSocket)
 				}
 				if (nPackageDataSize > nDataBufSize)
 				{	// if the data has not load finished as small size buf, we realloc buffer, and continue to receive data.
-					nDataBufSize = nPackageDataSize % BUF_SIZE ? (nPackageDataSize / BUF_SIZE + 2) * BUF_SIZE : (nPackageDataSize / BUF_SIZE + 1) * BUF_SIZE;
-					char* pNewDataBuf = new char[nDataBufSize];
-					if (pNewDataBuf == NULL)
-					{
-						Log("RecvDataEx: allocate new space failed, the need size is %d \n", nDataBufSize);
-						return;
-					}
-					// copy data to new data buf.
-					SAFE_COPY(pNewDataBuf, pPackageData, nRecvDataSize);
-					// release original buf
-					if (pRawDataBuf)
-						delete[]pRawDataBuf;
-
-					pRawDataBuf = pNewDataBuf;
+                    if (!ReallocBufAndCopyData(nPackageDataSize, nDataBufSize, &pRawDataBuf, pPackageData, nRecvDataSize))
+                        goto clean;
 					pPackageData = pIncr = pRawDataBuf;
 					pIncr += nRecvDataSize;
 					break;
@@ -371,6 +373,7 @@ void CSimpleSocket::RecvDataEx(socket_r& connSocket)
 		}
 	}
 
+clean:  // Resource free.
 	if (pRawDataBuf)
 		delete[]pRawDataBuf;
 }
@@ -596,7 +599,7 @@ void CSimpleSocket::Log(const char* FormatStr, ...)
 	_crt_va_end(_Arglist);
 #else
 	va_start(_Arglist, FormatStr);
-	vsnprintf_s(szLogStr, sizeof(szLogStr), FormatStr, _Arglist);
+	_Ret = vsnprintf_s(szLogStr, sizeof(szLogStr), FormatStr, _Arglist);
 	va_end(_Arglist);
 #endif
 	
