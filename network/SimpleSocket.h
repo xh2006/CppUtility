@@ -138,6 +138,7 @@ namespace SIMPLE_SOCKET
 		sockaddr clientIP;
 		ushort clientPort;
 		char* pBuf;		// point to a buf which save the socket's data.
+		int nBufSize;
 		// std::share_ptr<char*> pBuf;
 		int nRecvSize;
 	};
@@ -183,10 +184,11 @@ namespace SIMPLE_SOCKET
 		int set_nonblocking(int fd);
 		void add_fd(int epollfd, int fd, bool enable_et = true);
 		void remove_fd(int epollfd, int fd);
-		inline void lt(epoll_event* events, int num, int epollfd, int listenfd);
-		inline void et(epoll_event* events, int num, int epollfd, int listenfd);
+		inline void lt_data_handle(socket_r connfd);
+		inline void lt(epoll_event* events, int num, int epollfd, socket_r listenfd);
+		inline void et(epoll_event* events, int num, int epollfd, socket_r listenfd);
 		// would have a blend pattern?
-		inline void handle_epoll_event(epoll_event* events, int num, int epollfd, int listenfd);
+		inline void handle_epoll_event(epoll_event* events, int num, int epollfd, socket_r listenfd);
 
 		int m_epfd;
 #endif

@@ -672,9 +672,34 @@ void CSimpleSocket::remove_fd(int epollfd, int fd)
 	}
 }
 
-void CSimpleSocket::lt(epoll_event* events, int num, int epollfd, int listenfd)
+void CSimpleSocket::lt_data_handle(socket_r connfd)
 {
-    char buf[BUF_SIZE];
+	char buf[BUF_SIZE];
+	Log("enter into lt_data_handle.\n");
+	int ret = recv(connfd, buf, sizeof(buf), 0);
+	if(ret <= 0){
+		closesocket(connfd);
+		DelSocketInfo(connfd);
+		Log("recv error, error code: %d", GetSocketErrorCode());
+	}
+
+	// find the socket infos.
+	auto this_sock_info = m_socketInfos.find(connfd);
+	if(this_sock_info != m_socketInfos.end())
+	{
+		if (this_sock_info->second.nBufSize < (this_sock_info->second.nRecvSize + ret)) {
+			ReallocBufAndCopyData( this_sock_info->second.nRecvSize + ret, this_sock_info->second.nBufSize, 
+			&(this_sock_info->second.pBuf), this_sock_info->second.pBuf, this_sock_info->second.nRecvSize);
+		}
+		SAFE_COPY(this_sock_info->second.pBuf + this_sock_info->second.nRecvSize, buf, ret);
+	}
+
+	// if get enough data, we handle it by callback function.
+	
+}
+
+void CSimpleSocket::lt(epoll_event* events, int num, int epollfd, socket_r listenfd)
+{
 	for(int i = 0; i < num; i++){
 		int sockfd = events[i].data.fd;
 		if(sockfd == listenfd){
@@ -689,15 +714,7 @@ void CSimpleSocket::lt(epoll_event* events, int num, int epollfd, int listenfd)
 			add_fd(epollfd, connSock, false);	// level triger
 			AddSocketInfo(connSock);	// add the connect socket
 		}else if(events[i].events & EPOLLIN){	// for small data which size less than 1K.
-			Log("event trigger once\n");
-			memset(buf, '\0', BUF_SIZE);
-			int ret = recv(sockfd, buf, BUF_SIZE - 1, 0);
-			if(ret <= 0){
-				closesocket(sockfd);
-				DelSocketInfo(sockfd);
-				Log("recv error, error code: %d", GetSocketErrorCode());
-				continue;
-			}
+			lt_data_handle(sockfd);
 		}else if(events[i].events & EPOLLOUT){
 			// like EPOLLIN, we now just send a response. There will be a thread pool to write if need.
 			SendData(1, "I get your message.", sizeof("I get your message."));
@@ -716,7 +733,7 @@ void CSimpleSocket::lt(epoll_event* events, int num, int epollfd, int listenfd)
 	}
 }
 
-void CSimpleSocket::et(epoll_event* events, int num, int epollfd, int listenfd)
+void CSimpleSocket::et(epoll_event* events, int num, int epollfd, socket_r listenfd)
 {
 	char buf[BUF_SIZE];
 	for(int i = 0; i < num; i++){
@@ -734,9 +751,9 @@ void CSimpleSocket::et(epoll_event* events, int num, int epollfd, int listenfd)
 			AddSocketInfo(connSock);	// add the connect socket
 		}else if(events[i].events & EPOLLIN){
 			// here we will call a thread pool to handle the data. now we just create a tmp thread. To do ... 
-			// int conn = events[i].data.fd;
-			// std::thread th_handler(&CSimpleSocket::RecvDataEx, this, conn);
-			// th_handler.detach();
+			int conn = events[i].data.fd;
+			std::thread th_handler(&CSimpleSocket::RecvDataEx, this, std::ref(conn));
+			th_handler.join();
 		}else if(events[i].events & EPOLLOUT){
 			// like EPOLLIN, we now just send a response. There will be a thread pool to write if need.
 			SendData(1, "I get your message.", sizeof("I get your message."));
@@ -755,7 +772,7 @@ void CSimpleSocket::et(epoll_event* events, int num, int epollfd, int listenfd)
 	}
 }
 
-void CSimpleSocket::handle_epoll_event(epoll_event* events, int num, int epollfd, int listenfd)
+void CSimpleSocket::handle_epoll_event(epoll_event* events, int num, int epollfd, socket_r listenfd)
 {	
 	for(int i = 0; i < num; ++i)
 	{	
