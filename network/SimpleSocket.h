@@ -178,7 +178,7 @@ namespace SIMPLE_SOCKET
 		inline void Log(const char* FormatStr, ...);
 		inline void AddSocketInfo(const socket_r& connSock);
 		inline void DelSocketInfo(const socket_r& connSock);
-
+        bool ReallocBufAndCopyData(int nNeedSize, int& nAllocSize, char** ppBuf, char* pData, int nDataRecvSize);
 #ifndef _WIN32
 		int set_nonblocking(int fd);
 		void add_fd(int epollfd, int fd, bool enable_et = true);
