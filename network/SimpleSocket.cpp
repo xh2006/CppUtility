@@ -1,4 +1,4 @@
-
+ï»¿
 #include <string.h>
 #include <stdarg.h>
 #include <fcntl.h>
@@ -200,7 +200,7 @@ void CSimpleSocket::RecvData(socket_r& connSocket)
             int nDataSize = 0;
 
             if (nRecvDataSize < sizeof(SOCK_MESSAGE_HEADER)) {
-                // ²»¹»Êý¾ÝÍ·µÄÊý¾Ý£¬½ÓÊÕµ½×ã¹»µÄÊý¾ÝÔÙ´¦Àí
+                // ä¸å¤Ÿæ•°æ®å¤´çš„æ•°æ®ï¼ŒæŽ¥æ”¶åˆ°è¶³å¤Ÿçš„æ•°æ®å†å¤„ç†
                 continue;
             }
 
