@@ -16,42 +16,42 @@
  // The callback function, define by user.
  void HandleData(SOCK_MESSAGE_HEADER& smh, const char* pDataBuf)
  {
-	 std::string strData;
-	 CS_MSG* pMsg = NULL;
-	 switch (smh.dataType)
-	 {
-	 case DT_STRING:	
-		 strData = std::string(pDataBuf, pDataBuf + smh.dataSize);
-		 printf(strData.c_str());
-		 break;
-	 case DT_MSG:
-		 pMsg = (CS_MSG*)pDataBuf;
-		 printf("msgId : %d, dwHandle : %d", pMsg->msgId, pMsg->dwHandle);
-		 break;
-	 default:
-		 break;
-	 }
+     std::string strData;
+     CS_MSG* pMsg = NULL;
+     switch (smh.dataType)
+     {
+     case DT_STRING:
+         strData = std::string(pDataBuf, pDataBuf + smh.dataSize);
+         printf(strData.c_str());
+         break;
+     case DT_MSG:
+         pMsg = (CS_MSG*)pDataBuf;
+         printf("msgId : %d, dwHandle : %d", pMsg->msgId, pMsg->dwHandle);
+         break;
+     default:
+         break;
+     }
  }
 
 For Server:
-	 CSimpleSocket svr;
-	 svr.StartNetwork("127.0.0.1", 8005, np_server, HandleData);
-	 
-	 while (!svr.GetNetworkConnStatus())
-	 {
-		 Sleep(500);
-	 }
-	 svr.SendData(DT_STRING, "From server \n", sizeof("From server \n"));
+     CSimpleSocket svr;
+     svr.StartNetwork("127.0.0.1", 8005, np_server, HandleData);
+     
+     while (!svr.GetNetworkConnStatus())
+     {
+         Sleep(500);
+     }
+     svr.SendData(DT_STRING, "From server \n", sizeof("From server \n"));
 
 For Client:
-	 CSimpleSocket clt;
-	 clt.StartNetwork("127.0.0.1", 8005, np_client, HandleData);
+     CSimpleSocket clt;
+     clt.StartNetwork("127.0.0.1", 8005, np_client, HandleData);
 
-	 while (!clt.GetNetworkConnStatus())
-	 {
-		 Sleep(500);
-	 }
-	 clt.SendData(DT_STRING, "From client \n", sizeof("From client \n"));
+     while (!clt.GetNetworkConnStatus())
+     {
+         Sleep(500);
+     }
+     clt.SendData(DT_STRING, "From client \n", sizeof("From client \n"));
 
  *
  */
@@ -99,114 +99,120 @@ namespace SIMPLE_SOCKET
 #endif
 
 #define BUF_SIZE		1024
-#define LOG_BUF_SIZE	256
+#define LOG_BUF_SIZE	2048
 
 #define SAFE_COPY(DST, SRC, COUNT)	DST + COUNT > SRC ? memmove(DST, SRC, COUNT) : memcpy(DST, SRC, COUNT)
 
 
-	enum NETWORK_PATTERN
-	{
+    enum NETWORK_PATTERN
+    {
 #ifdef _WIN32
-		np_client,
-		np_server,		// for data whose largest size is less than BUF_SIZE.
-		np_client_ex,	
-		np_server_ex	// for big data with no fixed size.
-#else	// For linux, we only support epoll now. 
-		np_client,
-		np_server_epoll_lt,
-		np_server_epoll_et
+        np_client,
+        np_server,		// for data whose largest size is less than BUF_SIZE.
+        np_client_ex,
+        np_server_ex	// for big data with no fixed size.
+#else	// For linux, we only support epoll now.
+        np_client,
+        np_server_epoll_lt,
+        np_server_epoll_et
 #endif
-	};
+    };
 
-	enum FUNC_STYLE
-	{
-		fs_null,
-		fs_normal,
-		fs_stdBind
-	};
+    enum FUNC_STYLE
+    {
+        fs_null,
+        fs_normal,
+        fs_stdBind
+    };
 
-	struct SOCK_MESSAGE_HEADER
-	{
-		uint16_t headerSize;
-		uint16_t dataType;
-		uint32_t dataSize;
-	};
+    struct SOCK_MESSAGE_HEADER
+    {
+        uint16_t headerSize;
+        uint16_t dataType;
+        uint32_t dataSize;
+    };
 
-	struct SOCKET_INFO
-	{
-		bool bAlive;
-		sockaddr clientIP;
-		ushort clientPort;
-		char* pBuf;		// point to a buf which save the socket's data.
-		int nBufSize;
-		// std::share_ptr<char*> pBuf;
-		int nRecvSize;
-	};
-	typedef std::unordered_map<socket_r, SOCKET_INFO> SOCKET_INFOS;
+    struct SOCKET_INFO
+    {
+        bool bAlive;
+        sockaddr clientIP;
+        unsigned short clientPort;
+        char* pBuf;		// point to a buf which save the socket's data.
+        int nBufSize;
+        // std::share_ptr<char*> pBuf;
+        int nRecvSize;
+    };
 
-	typedef void(*HandleDataFunc)(const socket_r connSocket, SOCK_MESSAGE_HEADER& smh, const char* pDataBuf);
-	typedef std::function<void(const socket_r connSocket, SOCK_MESSAGE_HEADER& smh, const char* pDataBuf)> STD_HandleDataFunc;
-	typedef void(*LogFunc)(const char* pLogStr);
-	typedef void(*LogFuncW)(const wchar_t* pLogStr);
-	typedef std::function<void(const std::wstring& strLog)> STD_LogFuncW;
-	typedef std::function<void(const std::string& strLog)> STD_LogFunc;
+    using SOCKET_INFOS = std::unordered_map<socket_r, SOCKET_INFO>;
 
-	class CSimpleSocket
-	{
-	public:
-		CSimpleSocket();
-		virtual ~CSimpleSocket();
+    using HandleDataFunc = void(*)(const socket_r& connSocket, const SOCK_MESSAGE_HEADER& smh,
+        const char* pDataBuf);
+    using LogFunc = void(*)(const char* pLogStr);
+    using LogFuncW = void(*)(const wchar_t* pLogStr);
+    using STD_HandleDataFunc = std::function<void(const socket_r& connSocket, SOCK_MESSAGE_HEADER& smh,
+        const char* pDataBuf)>;
+    using STD_LogFunc = std::function<void(const std::string& strLog)>;
+    using STD_LogFuncW = std::function<void(const std::string& strLog)>;
 
-		bool StartNetwork(const std::string strIP, unsigned short uPort, NETWORK_PATTERN np, HandleDataFunc pHandleDataFunc);
-		bool StartNetwork(const std::string strIP, unsigned short uPort, NETWORK_PATTERN np, STD_HandleDataFunc pHandleDataFunc);
-		void StopNetwork();
-		void SetLogCallBackFunc(LogFunc logFunc);
-		void SetLogCallBackFunc(STD_LogFunc logFunc);
-		bool GetNetworkConnStatus();
+    class CSimpleSocket
+    {
+    public:
+        CSimpleSocket();
+        virtual ~CSimpleSocket();
 
-		bool SendData(int dataType, const char* pData, int nDataSize);
-		static bool SendData(const socket_r& s, int dataType, const char* pData, int nDataSize);
+        bool StartNetwork(const std::string strIP, unsigned short uPort, NETWORK_PATTERN np, HandleDataFunc pHandleDataFunc);
+        bool StartNetwork(const std::string strIP, unsigned short uPort, NETWORK_PATTERN np, STD_HandleDataFunc pHandleDataFunc);
+        void StopNetwork();
+        void SetLogCallBackFunc(LogFunc logFunc);
+        void SetLogCallBackFunc(STD_LogFunc logFunc);
+        bool GetNetworkConnStatus();
 
-	private:
-		void CreateMsgServerTcp(const std::string strIP, unsigned short uPort);
-		void CreateMsgClientTcp(const std::string strIP, unsigned short uPort);
-		void RecvData(socket_r& connSocket);	// for package size less than BUF_SIZE
-		void RecvDataEx(socket_r& connSocket);	// for package size is not fixed.
+        bool SendData(int dataType, const char* pData, int nDataSize);
+        bool SendData(const socket_r& s, int dataType, const char* pData, int nDataSize);
 
-		int GetSocketErrorCode();
-		void SetSocketFailed(socket_r& s);
-		inline void LogOutput(const char* pLogStr);
-		inline void Log(const char* FormatStr, ...);
-		inline void AddSocketInfo(const socket_r& connSock);
-		inline void DelSocketInfo(const socket_r& connSock);
+    private:
+        void CreateMsgServerTcp(const std::string strIP, unsigned short uPort);
+        void CreateMsgClientTcp(const std::string strIP, unsigned short uPort);
+        void RecvData(socket_r& connSocket);	// for package size less than BUF_SIZE
+        void RecvDataEx(socket_r& connSocket);	// for package size is not fixed.
+
+        int GetSocketErrorCode();
+        void SetSocketFailed(socket_r& s);
+        inline void LogOutput(const char* pLogStr);
+        inline void Log(const char* FormatStr, ...);
+        inline void AddSocketInfo(const socket_r& connSock);
+        inline void DelSocketInfo(const socket_r& connSock);
         bool ReallocBufAndCopyData(int nNeedSize, int& nAllocSize, char** ppBuf, char* pData, int nDataRecvSize);
 #ifndef _WIN32
-		int set_nonblocking(int fd);
-		void add_fd(int epollfd, int fd, bool enable_et = true);
-		void remove_fd(int epollfd, int fd);
-		inline void lt_data_handle(socket_r connfd);
-		inline void lt(epoll_event* events, int num, int epollfd, socket_r listenfd);
-		inline void et(epoll_event* events, int num, int epollfd, socket_r listenfd);
-		// would have a blend pattern?
-		inline void handle_epoll_event(epoll_event* events, int num, int epollfd, socket_r listenfd);
+        int set_nonblocking(int fd);
+        void add_fd(int epollfd, int fd, bool enable_et = true);
+        void remove_fd(int epollfd, int fd);
+        inline void lt_data_handle(socket_r connfd);
+        inline void lt(epoll_event* events, int num, int epollfd, socket_r listenfd);
+        inline void et(epoll_event* events, int num, int epollfd, socket_r listenfd);
+        // would have a blend pattern?
+        inline void handle_epoll_event(epoll_event* events, int num, int epollfd, socket_r listenfd);
 
-		int m_epfd;
+        int m_epfd;
 #endif
 
-		HandleDataFunc HandleData;
-		STD_HandleDataFunc STD_HandleData;
-		LogFunc CallBackLog;
-		STD_LogFunc STD_CallBackLog;
+        HandleDataFunc HandleData;
+        STD_HandleDataFunc STD_HandleData;
+        LogFunc CallBackLog;
+        STD_LogFunc STD_CallBackLog;
 
-		socket_r m_cltSocket;
-		NETWORK_PATTERN m_workPattern;	// Describe the network work pattern. 0��client ; > 1��server
-		bool m_bStop;	// network 
-		bool m_bConnected;	// 
+        socket_r m_cltSocket;
+        NETWORK_PATTERN m_workPattern;	// Describe the network work pattern.
+        bool m_bStop;	// network
+        bool m_bConnected;
 
-		SOCKET_INFOS m_socketInfos;
-		std::mutex m_mutexSocketInfos;
-		FUNC_STYLE m_fsCallBack;	
-	};
+        SOCKET_INFOS m_socketInfos;
+        std::mutex m_mutexSocketInfos;
+        FUNC_STYLE m_fsCallBack;
+
+        uint64_t m_nSendCount{ 0 };
+        uint64_t m_nRecvCount{ 0 };
+    };
 }
 
 #endif
